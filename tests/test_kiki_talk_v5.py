@@ -12,11 +12,14 @@ Covers trial_minutes in settings.json (default 60, admin-editable):
   B. app.py source + import checks: the trial field in the payment
      settings form, the "new signups only" note, save_settings call
      passes trial_minutes; store helpers exist; v2/v3/v4 markers intact.
-  C. LIVE (reads only, ZERO commits): live settings.json has no
-     trial_minutes key yet, so get_settings() must merge the default
-     60. The live save_settings write round-trip is SKIPPED by design
-     — the HF 128-commits/hour rate limit (429) is active until
-     ~12:10; the parent retries it after the limit clears.
+  C. LIVE (best effort, max 2 dataset writes): read live settings
+     (trial_minutes must merge to the default 60), then a write
+     round-trip 90 -> verify -> restore 60 -> verify. If the HF
+     128-commits/hour rate limit answers 429, the write step is
+     SKIPPED (not failed) and the parent re-runs after ~12:10. If
+     the 90 write lands but the restore fails, that is a hard FAIL
+     (the live trial would be stuck at 90 minutes) and the report
+     must say so explicitly.
   D. Cleanup (reads only): no v5 test user/payment exists live.
   E. Regression (mocked): key v2/v3/v4 invariants re-checked — signup
      default trial ~3600s, duplicate mobile / wrong password rejected,
@@ -290,9 +293,8 @@ except Exception:
     print("APP SOURCE SECTION FAILED", flush=True)
     traceback.print_exc()
 
-# ---------------------------------------------------------------- C. live (reads only, 0 commits)
-print("=== live section (reads only; write round-trip SKIPPED) ===",
-      flush=True)
+# ---------------------------------------------------------------- C. live (write round-trip, 429 -> SKIP)
+print("=== live section (write round-trip; 429 -> SKIP) ===", flush=True)
 try:
     live_settings = store.load_json("settings.json")
     merged = store.get_settings()
@@ -304,17 +306,45 @@ try:
           f"live keys={sorted(live_settings.keys())}")
     check("C3. live trial_seconds() is 3600 (default 1 hour)",
           store.trial_seconds() == 3600)
-    skip("C4. live save_settings write round-trip skipped "
-         "(HF rate limit 429 until ~12:10)",
-         "parent retries after the limit clears; mocked section proves it")
+    # Write round-trip (2 commits): 90 -> verify -> restore 60 -> verify.
+    # On the HF 429 rate limit this whole step is SKIPPED, not failed —
+    # the parent re-runs the suite after ~12:10 to verify it live.
+    _live_base = dict(merged)
+    _wrote_90 = False
+    try:
+        store.save_settings({**_live_base, "trial_minutes": 90})
+        _wrote_90 = True
+    except Exception as exc:  # noqa: BLE001
+        if is_rate_limit(exc):
+            skip("C4. live save_settings(90) skipped (HF rate limit 429)",
+                 "re-run after ~12:10; mocked section proves it")
+        else:
+            raise
+    if _wrote_90:
+        check("C4a. live: trial_minutes=90 saved + read back",
+              store.get_settings()["trial_minutes"] == 90)
+        try:
+            store.save_settings({**_live_base, "trial_minutes": 60})
+        except Exception as exc:  # noqa: BLE001
+            if is_rate_limit(exc):
+                print("CRITICAL: live trial_minutes left at 90 — parent "
+                      "must reset it to 60 in settings.json",
+                      flush=True)
+                FAIL.append("C4b. live restore to 60 hit the rate limit; "
+                            "trial_minutes left at 90")
+            else:
+                raise
+        else:
+            check("C4b. live: trial_minutes restored to 60",
+                  store.get_settings()["trial_minutes"] == 60)
 except Exception as exc:  # noqa: BLE001
     if is_rate_limit(exc):
-        skip("C. live reads skipped (HF rate limit 429)",
+        skip("C. live section skipped (HF rate limit 429)",
              "parent retries after ~12:10")
     else:
-        print("LIVE READ SECTION FAILED", flush=True)
+        print("LIVE SECTION FAILED", flush=True)
         traceback.print_exc()
-        FAIL.append("C. live read error (see traceback)")
+        FAIL.append("C. live section error (see traceback)")
 
 # ---------------------------------------------------------------- D. cleanup (reads only)
 print("=== cleanup ===", flush=True)
