@@ -769,13 +769,20 @@ def page_admin():
             "এক IP থেকে সর্বোচ্চ ফ্রি ট্রায়াল (টি অ্যাকাউন্ট)",
             min_value=0, max_value=10, value=int(settings["max_trials_per_ip"]),
             help="এই সংখ্যক ট্রায়ালের পর একই IP থেকে নতুন অ্যাকাউন্টে আর ফ্রি ট্রায়াল থাকবে না — অ্যাকাউন্ট খুলবে, তবে পেমেন্ট করে ব্যবহার করতে হবে।")
+        tr_min = st.number_input(
+            "ফ্রি ট্রায়ালের সময় (মিনিট)",
+            min_value=0, max_value=1440, value=int(settings["trial_minutes"]),
+            help="নতুন সাইন আপে এই সময়ের ফ্রি ট্রায়াল মিলবে। ০ লিখলে আর ফ্রি ট্রায়াল থাকবে না — নতুন অ্যাকাউন্টে সরাসরি পেমেন্ট লাগবে।")
+        st.caption("⚠️ ট্রায়ালের সময় বদলালে শুধু নতুন সাইন আপে প্রযোজ্য হবে — "
+                   "যারা ইতিমধ্যে ট্রায়ালে আছে, তাদের সময় বদলাবে না।")
         saved = st.form_submit_button("💾 সেটিংস সংরক্ষণ করুন", type="primary")
     if saved:
         try:
             store.save_settings({"bkash_number": bk.strip(),
                                  "nagad_number": ng.strip(),
                                  "instructions": ins,
-                                 "max_trials_per_ip": int(max_tr)})
+                                 "max_trials_per_ip": int(max_tr),
+                                 "trial_minutes": int(tr_min)})
             st.success("পেমেন্ট সেটিংস সংরক্ষণ হয়েছে।")
             st.rerun()
         except Exception as exc:

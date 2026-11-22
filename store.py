@@ -14,7 +14,7 @@ Files in the repo:
   admin.json    — admin password hash (set on first admin visit, never
                   hard-coded, never in this repo)
   settings.json — admin-editable payment numbers + instructions + the
-                  max-trials-per-IP limit
+                  max-trials-per-IP limit + the free-trial length (minutes)
   packages.json — admin-manageable subscription packages (name, days,
                   price, active; never hard-deleted)
   screenshots/  — payment screenshots uploaded by users
@@ -43,6 +43,8 @@ REPO_ID = "demoqqq/kiki-talk-data"
 REPO_TYPE = "dataset"
 
 TRIAL_SECONDS = 3600            # 1-hour free trial, from signup
+DEFAULT_TRIAL_MINUTES = 60      # free-trial length, admin-editable (settings.json)
+MAX_TRIAL_MINUTES = 1440        # 24 hours — the longest trial the owner can set
 SUBSCRIPTION_DAYS = 30          # approval -> 30 days unlimited
 DAILY_CHAR_LIMIT = 20000        # fair-use: chars per user per day
 PRICE_TAKA = 50
@@ -63,6 +65,7 @@ DEFAULT_SETTINGS = {
     "nagad_number": PLACEHOLDER_NUMBER,
     "instructions": DEFAULT_INSTRUCTIONS,
     "max_trials_per_ip": DEFAULT_MAX_TRIALS_PER_IP,
+    "trial_minutes": DEFAULT_TRIAL_MINUTES,
 }
 DEFAULT_PACKAGES = [
     {"id": "pkg_7d", "name": "১ সপ্তাহ", "days": 7, "price": 20, "active": True},
@@ -232,14 +235,15 @@ def get_user_by_id(user_id: str) -> dict | None:
 
 def signup(name: str, mobile: str, password: str,
            client_ip: str | None = None, user_agent: str | None = None) -> dict:
-    """Create an account and start the 1-hour free trial immediately.
+    """Create an account and start the free trial immediately.
 
-    client_ip / user_agent are recorded for abuse detection (same-IP
-    clusters in the admin panel). If this IP already has
-    max_trials_per_ip trial accounts, the new account is created WITHOUT
-    a free trial (it still works — it just has to pay first). Signup is
-    never blocked outright, so shared family Wi-Fi cannot lock genuine
-    users out.
+    The trial length comes from settings (trial_minutes, default 60).
+    If the owner set trial_minutes to 0, the account is created WITHOUT
+    a free trial (it still works — it just has to pay first), same as
+    the IP-limit path below. If this IP already has max_trials_per_ip
+    trial accounts, the new account is created WITHOUT a free trial.
+    Signup is never blocked outright, so shared family Wi-Fi cannot
+    lock genuine users out.
     """
     name = (name or "").strip()
     mobile = normalize_mobile(mobile)
@@ -255,7 +259,11 @@ def signup(name: str, mobile: str, password: str,
     started = now()
     ip = (client_ip or "").strip() or "unknown"
     trial_granted = True
-    if ip != "unknown":
+    trial_secs = trial_seconds()
+    if trial_secs <= 0:
+        # The owner switched the free trial off (trial_minutes = 0).
+        trial_granted = False
+    if trial_granted and ip != "unknown":
         try:
             limit = int(get_settings().get("max_trials_per_ip",
                                            DEFAULT_MAX_TRIALS_PER_IP))
@@ -276,7 +284,7 @@ def signup(name: str, mobile: str, password: str,
         "password_hash": pw_hash,
         "created_at": started.isoformat(timespec="seconds"),
         "trial_started_at": started.isoformat(timespec="seconds"),
-        "trial_ends_at": (started + timedelta(seconds=TRIAL_SECONDS)).isoformat(timespec="seconds")
+        "trial_ends_at": (started + timedelta(seconds=trial_secs)).isoformat(timespec="seconds")
         if trial_granted else started.isoformat(timespec="seconds"),
         "trial_granted": trial_granted,
         "first_ip": ip,
@@ -326,7 +334,10 @@ def login(mobile: str, password: str,
 
 
 def grant_trial(user_id: str) -> None:
-    """Admin grants (or re-grants) a 1-hour free trial to one user."""
+    """Admin grants (or re-grants) a free trial to one user.
+
+    The trial length comes from settings (trial_minutes, default 60),
+    so a manually granted trial matches the signup trial."""
     started = now()
 
     def _grant(data):
@@ -334,7 +345,7 @@ def grant_trial(user_id: str) -> None:
             if u.get("id") == user_id:
                 u["trial_granted"] = True
                 u["trial_started_at"] = started.isoformat(timespec="seconds")
-                u["trial_ends_at"] = (started + timedelta(seconds=TRIAL_SECONDS)).isoformat(timespec="seconds")
+                u["trial_ends_at"] = (started + timedelta(seconds=trial_seconds())).isoformat(timespec="seconds")
                 return
         raise ValueError("অ্যাকাউন্ট পাওয়া যায়নি।")
 
@@ -612,7 +623,34 @@ def get_settings() -> dict:
     for key in DEFAULT_SETTINGS:
         if key in data and data[key] is not None:
             merged[key] = data[key]
+    # trial_minutes is coerced here (not just in save_settings) so a
+    # hand-edited settings.json with a bad value can never crash the
+    # app or grant a nonsensical trial — it falls back to 60 minutes.
+    try:
+        merged["trial_minutes"] = int(merged.get(
+            "trial_minutes", DEFAULT_TRIAL_MINUTES))
+    except Exception:
+        merged["trial_minutes"] = DEFAULT_TRIAL_MINUTES
+    if (merged["trial_minutes"] < 0
+            or merged["trial_minutes"] > MAX_TRIAL_MINUTES):
+        merged["trial_minutes"] = DEFAULT_TRIAL_MINUTES
     return merged
+
+
+def trial_seconds() -> int:
+    """Configured free-trial length in seconds (default 1 hour).
+
+    Reads trial_minutes from settings; falls back to TRIAL_SECONDS
+    when settings cannot be read or the stored value is invalid.
+    0 means the owner switched the free trial off entirely."""
+    try:
+        minutes = int(get_settings().get("trial_minutes",
+                                         DEFAULT_TRIAL_MINUTES))
+    except Exception:
+        return TRIAL_SECONDS
+    if minutes < 0 or minutes > MAX_TRIAL_MINUTES:
+        return TRIAL_SECONDS
+    return minutes * 60
 
 
 def valid_payment_number(number: str) -> bool:
@@ -639,12 +677,21 @@ def save_settings(settings: dict) -> dict:
         raise ValueError("এক IP-তে ট্রায়ালের সংখ্যা সঠিক নয়।")
     if limit < 0 or limit > 10:
         raise ValueError("এক IP-তে ট্রায়ালের সংখ্যা ০ থেকে ১০-এর মধ্যে হতে হবে।")
+    try:
+        trial_minutes = int(settings.get("trial_minutes",
+                                         DEFAULT_TRIAL_MINUTES))
+    except (TypeError, ValueError):
+        raise ValueError("ফ্রি ট্রায়ালের সময় সংখ্যায় লিখুন (মিনিটে, ০ থেকে ১৪৪০)।")
+    if trial_minutes < 0 or trial_minutes > MAX_TRIAL_MINUTES:
+        raise ValueError("ফ্রি ট্রায়ালের সময় ০ থেকে ১৪৪০ মিনিটের মধ্যে হতে হবে "
+                         "(০ লিখলে ফ্রি ট্রায়াল বন্ধ থাকবে)।")
     cleaned = {
         "bkash_number": bkash or PLACEHOLDER_NUMBER,
         "nagad_number": nagad or PLACEHOLDER_NUMBER,
         "instructions": (settings.get("instructions") or "").strip()
         or DEFAULT_INSTRUCTIONS,
         "max_trials_per_ip": limit,
+        "trial_minutes": trial_minutes,
     }
     save_json("settings.json", cleaned)
     return cleaned
