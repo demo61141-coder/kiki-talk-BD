@@ -47,6 +47,10 @@ DEFAULT_TRIAL_MINUTES = 60      # free-trial length, admin-editable (settings.js
 MAX_TRIAL_MINUTES = 1440        # 24 hours — the longest trial the owner can set
 SUBSCRIPTION_DAYS = 30          # approval -> 30 days unlimited
 DAILY_CHAR_LIMIT = 20000        # fair-use: chars per user per day
+DEFAULT_TRIAL_CHAR_LIMIT = 0    # trial cap: 0 = no cap (owner can set one)
+MAX_TRIAL_CHAR_LIMIT = 100000   # the largest trial cap the owner can set
+MIN_DAILY_CHAR_LIMIT = 1000     # the smallest daily cap the owner can set
+MAX_DAILY_CHAR_LIMIT = 1000000  # the largest daily cap the owner can set
 PRICE_TAKA = 50
 
 # --- admin-editable settings (settings.json) + packages (packages.json) ---
@@ -66,6 +70,8 @@ DEFAULT_SETTINGS = {
     "instructions": DEFAULT_INSTRUCTIONS,
     "max_trials_per_ip": DEFAULT_MAX_TRIALS_PER_IP,
     "trial_minutes": DEFAULT_TRIAL_MINUTES,
+    "trial_char_limit": DEFAULT_TRIAL_CHAR_LIMIT,
+    "daily_char_limit": DAILY_CHAR_LIMIT,
 }
 DEFAULT_PACKAGES = [
     {"id": "pkg_7d", "name": "১ সপ্তাহ", "days": 7, "price": 20, "active": True},
@@ -296,6 +302,7 @@ def signup(name: str, mobile: str, password: str,
         "active": True,
         "daily_chars_used": 0,
         "daily_chars_date": today_str(),
+        "trial_chars_used": 0,
     }
 
     def _add(data):
@@ -346,6 +353,8 @@ def grant_trial(user_id: str) -> None:
                 u["trial_granted"] = True
                 u["trial_started_at"] = started.isoformat(timespec="seconds")
                 u["trial_ends_at"] = (started + timedelta(seconds=trial_seconds())).isoformat(timespec="seconds")
+                # A fresh trial gets a fresh character cap.
+                u["trial_chars_used"] = 0
                 return
         raise ValueError("অ্যাকাউন্ট পাওয়া যায়নি।")
 
@@ -429,9 +438,19 @@ def access_state(user: dict) -> dict:
 
 
 def check_and_charge_chars(user_id: str, chars: int) -> int:
-    """Fair-use: charge `chars` against today's limit. Raises if over limit.
-    Returns remaining chars today."""
+    """Fair-use: charge `chars` against today's limit AND, while the
+    user is in trial, against the trial character cap. Raises if either
+    limit would be exceeded. Returns remaining chars today.
+
+    Both limits are read live from settings at charge time (not cached
+    at startup), so an admin change applies without a redeploy:
+      - daily_char_limit (default 20000) applies to everyone.
+      - trial_char_limit (default 0 = no cap) applies only while the
+        user's state is "trial"; paid users are never affected.
+    """
     today = today_str()
+    limit_daily = daily_char_limit()
+    limit_trial = trial_char_limit()
 
     def _charge(data):
         for u in data.get("users", []):
@@ -440,24 +459,45 @@ def check_and_charge_chars(user_id: str, chars: int) -> int:
                     u["daily_chars_date"] = today
                     u["daily_chars_used"] = 0
                 used = int(u.get("daily_chars_used", 0))
-                if used + chars > DAILY_CHAR_LIMIT:
+                if used + chars > limit_daily:
                     raise ValueError(
-                        f"আজকের সীমা শেষ (দৈনিক {DAILY_CHAR_LIMIT:,} অক্ষর)। "
+                        f"আজকের সীমা শেষ (দৈনিক {limit_daily:,} অক্ষর)। "
                         "আগামীকাল আবার ব্যবহার করতে পারবেন।"
                     )
+                if access_state(u)["state"] == "trial" and limit_trial > 0:
+                    t_used = int(u.get("trial_chars_used", 0))
+                    if t_used + chars > limit_trial:
+                        raise ValueError(
+                            f"ফ্রি ট্রায়ালের অক্ষর সীমা শেষ (ট্রায়ালে মোট "
+                            f"{limit_trial:,} অক্ষর)। প্যাকেজ কিনে আনলিমিটেড "
+                            "ব্যবহার করুন।"
+                        )
+                    u["trial_chars_used"] = t_used + chars
                 u["daily_chars_used"] = used + chars
                 return
         raise ValueError("অ্যাকাউন্ট পাওয়া যায়নি।")
 
     update_json("users.json", _charge)
     fresh = get_user_by_id(user_id) or {}
-    return DAILY_CHAR_LIMIT - int(fresh.get("daily_chars_used", 0))
+    return limit_daily - int(fresh.get("daily_chars_used", 0))
 
 
 def daily_remaining(user: dict) -> int:
+    limit = daily_char_limit()
     if user.get("daily_chars_date") != today_str():
-        return DAILY_CHAR_LIMIT
-    return max(0, DAILY_CHAR_LIMIT - int(user.get("daily_chars_used", 0)))
+        return limit
+    return max(0, limit - int(user.get("daily_chars_used", 0)))
+
+
+def trial_chars_remaining(user: dict) -> int | None:
+    """Remaining trial characters, or None when the user is not in
+    trial or the owner set no trial cap (0 = unlimited)."""
+    if access_state(user)["state"] != "trial":
+        return None
+    limit = trial_char_limit()
+    if limit <= 0:
+        return None
+    return max(0, limit - int(user.get("trial_chars_used", 0)))
 
 
 # ---------------------------------------------------------------------------
@@ -634,6 +674,26 @@ def get_settings() -> dict:
     if (merged["trial_minutes"] < 0
             or merged["trial_minutes"] > MAX_TRIAL_MINUTES):
         merged["trial_minutes"] = DEFAULT_TRIAL_MINUTES
+    # trial_char_limit / daily_char_limit are coerced the same way, so a
+    # hand-edited settings.json with a bad value can never crash the
+    # app or grant a nonsensical cap — they fall back to their defaults
+    # (0 = no trial cap, 20000/day).
+    try:
+        merged["trial_char_limit"] = int(merged.get(
+            "trial_char_limit", DEFAULT_TRIAL_CHAR_LIMIT))
+    except Exception:
+        merged["trial_char_limit"] = DEFAULT_TRIAL_CHAR_LIMIT
+    if (merged["trial_char_limit"] < 0
+            or merged["trial_char_limit"] > MAX_TRIAL_CHAR_LIMIT):
+        merged["trial_char_limit"] = DEFAULT_TRIAL_CHAR_LIMIT
+    try:
+        merged["daily_char_limit"] = int(merged.get(
+            "daily_char_limit", DAILY_CHAR_LIMIT))
+    except Exception:
+        merged["daily_char_limit"] = DAILY_CHAR_LIMIT
+    if (merged["daily_char_limit"] < MIN_DAILY_CHAR_LIMIT
+            or merged["daily_char_limit"] > MAX_DAILY_CHAR_LIMIT):
+        merged["daily_char_limit"] = DAILY_CHAR_LIMIT
     return merged
 
 
@@ -651,6 +711,35 @@ def trial_seconds() -> int:
     if minutes < 0 or minutes > MAX_TRIAL_MINUTES:
         return TRIAL_SECONDS
     return minutes * 60
+
+
+def trial_char_limit() -> int:
+    """Configured trial character cap (0 = no cap). Reads settings
+    live; falls back to DEFAULT_TRIAL_CHAR_LIMIT when settings are
+    unreadable or the stored value is invalid. Applies only while a
+    user is in trial — paid users are never affected."""
+    try:
+        limit = int(get_settings().get("trial_char_limit",
+                                       DEFAULT_TRIAL_CHAR_LIMIT))
+    except Exception:
+        return DEFAULT_TRIAL_CHAR_LIMIT
+    if limit < 0 or limit > MAX_TRIAL_CHAR_LIMIT:
+        return DEFAULT_TRIAL_CHAR_LIMIT
+    return limit
+
+
+def daily_char_limit() -> int:
+    """Configured daily fair-use limit for everyone (trial + paid).
+    Reads settings live; falls back to DAILY_CHAR_LIMIT (20000) when
+    settings are unreadable or the stored value is invalid."""
+    try:
+        limit = int(get_settings().get("daily_char_limit",
+                                       DAILY_CHAR_LIMIT))
+    except Exception:
+        return DAILY_CHAR_LIMIT
+    if limit < MIN_DAILY_CHAR_LIMIT or limit > MAX_DAILY_CHAR_LIMIT:
+        return DAILY_CHAR_LIMIT
+    return limit
 
 
 def valid_payment_number(number: str) -> bool:
@@ -685,6 +774,24 @@ def save_settings(settings: dict) -> dict:
     if trial_minutes < 0 or trial_minutes > MAX_TRIAL_MINUTES:
         raise ValueError("ফ্রি ট্রায়ালের সময় ০ থেকে ১৪৪০ মিনিটের মধ্যে হতে হবে "
                          "(০ লিখলে ফ্রি ট্রায়াল বন্ধ থাকবে)।")
+    try:
+        trial_char_limit_val = int(settings.get("trial_char_limit",
+                                                DEFAULT_TRIAL_CHAR_LIMIT))
+    except (TypeError, ValueError):
+        raise ValueError("ফ্রি ট্রায়ালের অক্ষর সীমা সংখ্যায় লিখুন "
+                         "(০ থেকে ১০০০০০)।")
+    if trial_char_limit_val < 0 or trial_char_limit_val > MAX_TRIAL_CHAR_LIMIT:
+        raise ValueError("ফ্রি ট্রায়ালের অক্ষর সীমা ০ থেকে ১০০০০০-এর মধ্যে হতে হবে "
+                         "(০ লিখলে কোনো সীমা থাকবে না)।")
+    try:
+        daily_char_limit_val = int(settings.get("daily_char_limit",
+                                                DAILY_CHAR_LIMIT))
+    except (TypeError, ValueError):
+        raise ValueError("দৈনিক অক্ষর সীমা সংখ্যায় লিখুন "
+                         "(১০০০ থেকে ১০০০০০০)।")
+    if (daily_char_limit_val < MIN_DAILY_CHAR_LIMIT
+            or daily_char_limit_val > MAX_DAILY_CHAR_LIMIT):
+        raise ValueError("দৈনিক অক্ষর সীমা ১০০০ থেকে ১০০০০০০-এর মধ্যে হতে হবে।")
     cleaned = {
         "bkash_number": bkash or PLACEHOLDER_NUMBER,
         "nagad_number": nagad or PLACEHOLDER_NUMBER,
@@ -692,6 +799,8 @@ def save_settings(settings: dict) -> dict:
         or DEFAULT_INSTRUCTIONS,
         "max_trials_per_ip": limit,
         "trial_minutes": trial_minutes,
+        "trial_char_limit": trial_char_limit_val,
+        "daily_char_limit": daily_char_limit_val,
     }
     save_json("settings.json", cleaned)
     return cleaned

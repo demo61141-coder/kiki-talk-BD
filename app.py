@@ -538,6 +538,10 @@ def page_generate(user: dict):
         )
     remaining = store.daily_remaining(user)
     st.caption(f"আজকের ফেয়ার-ইউজ সীমা: আর {bn(f'{remaining:,}')} অক্ষর বাকি।")
+    trial_left_chars = store.trial_chars_remaining(user)
+    if trial_left_chars is not None:
+        st.caption(f"ট্রায়ালের অক্ষর সীমা: আর {bn(f'{trial_left_chars:,}')} "
+                   f"অক্ষর বাকি (মোট {bn(f'{store.trial_char_limit():,}')})।")
 
     st.subheader("🎙️ ভয়েস বানান")
     model_key = st.radio(
@@ -875,6 +879,16 @@ def page_admin():
             help="নতুন সাইন আপে এই সময়ের ফ্রি ট্রায়াল মিলবে। ০ লিখলে আর ফ্রি ট্রায়াল থাকবে না — নতুন অ্যাকাউন্টে সরাসরি পেমেন্ট লাগবে।")
         st.caption("⚠️ ট্রায়ালের সময় বদলালে শুধু নতুন সাইন আপে প্রযোজ্য হবে — "
                    "যারা ইতিমধ্যে ট্রায়ালে আছে, তাদের সময় বদলাবে না।")
+        tr_chars = st.number_input(
+            "ফ্রি ট্রায়ালের অক্ষর সীমা",
+            min_value=0, max_value=100000, value=int(settings["trial_char_limit"]),
+            help="০ মানে কোনো সীমা নেই; শুধু ট্রায়াল চলাকালীন প্রযোজ্য। "
+                 "সীমা শেষ হলে ট্রায়াল ইউজারকে প্যাকেজ কিনতে বলা হবে।")
+        day_chars = st.number_input(
+            "দৈনিক অক্ষর সীমা",
+            min_value=1000, max_value=1000000, value=int(settings["daily_char_limit"]),
+            help="সবার জন্য প্রযোজ্য — ট্রায়াল ও প্যাকেজ দুটোতেই। "
+                 "এই সীমা বদলালে সাথে সাথে নতুন জেনারেশনে প্রযোজ্য হবে।")
         saved = st.form_submit_button("💾 সেটিংস সংরক্ষণ করুন", type="primary")
     if saved:
         try:
@@ -882,7 +896,9 @@ def page_admin():
                                  "nagad_number": ng.strip(),
                                  "instructions": ins,
                                  "max_trials_per_ip": int(max_tr),
-                                 "trial_minutes": int(tr_min)})
+                                 "trial_minutes": int(tr_min),
+                                 "trial_char_limit": int(tr_chars),
+                                 "daily_char_limit": int(day_chars)})
             st.success("পেমেন্ট সেটিংস সংরক্ষণ হয়েছে।")
             st.rerun()
         except Exception as exc:
@@ -985,6 +1001,9 @@ def page_admin():
             st.write(f"মেয়াদ শেষ: {(u.get('expires_at') or '—')[:16]}")
             used_chars = bn(f"{int(u.get('daily_chars_used', 0)):,}")
             st.write(f"আজকের ব্যবহার: {used_chars} অক্ষর")
+            if stt["state"] == "trial" or int(u.get("trial_chars_used", 0)) > 0:
+                trial_used = bn(f"{int(u.get('trial_chars_used', 0)):,}")
+                st.write(f"ট্রায়ালে ব্যবহার: {trial_used} অক্ষর")
             new_pw = st.text_input("নতুন পাসওয়ার্ড দিন (ভুলে গেলে)", type="password",
                                    key=f"rpw_{u['id']}")
             cb1, cb2 = st.columns(2)
