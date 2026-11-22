@@ -175,6 +175,61 @@ def logo_tap_button():
 
 
 # ---------------------------------------------------------------------------
+# Bottom navigation (mobile tab bar) + compact top header.
+# The sidebar is gone as the navigation home: the 5 menu items live in
+# a fixed bottom bar (icons + short Bengali labels, active tab orange),
+# and the user name / mobile / trial pill live in a top header.
+# The logo tap target (hidden admin entry) sits in the top header title
+# on every logged-in page, and in the login hero on the auth page.
+# ---------------------------------------------------------------------------
+
+NAV_ITEMS = [
+    ("nav_voice", "🎙️ ভয়েস", "🎙️ ভয়েস বানান"),
+    ("nav_payment", "💳 পেমেন্ট", "💳 পেমেন্ট / রিনিউ"),
+    ("nav_rules", "📏 নিয়ম", "📏 স্ক্রিপ্টের নিয়ম"),
+    ("nav_password", "🔐 পাসওয়ার্ড", "🔐 পাসওয়ার্ড বদলান"),
+    ("nav_logout", "🚪 লগ আউট", "🚪 লগ আউট"),
+]
+NAV_PAGES = [page for _, _, page in NAV_ITEMS]
+
+
+def status_pill_html(state: dict) -> str:
+    """The status pill HTML for the top header (trial/active/blocked/expired)."""
+    if state["state"] == "trial":
+        return (f'<span class="kt-pill">⏳ ট্রায়াল — আর '
+                f'{fmt_mins(state["trial_left_s"])}</span>')
+    if state["state"] == "active":
+        return (f'<span class="kt-pill">✅ চালু — আর '
+                f'{bn(state["sub_left_days"])} দিন</span>')
+    if state["state"] == "blocked":
+        return '<span class="kt-pill">🚫 অ্যাকাউন্ট বন্ধ আছে</span>'
+    return '<span class="kt-pill">⌛ মেয়াদ শেষ — রিনিউ করুন</span>'
+
+
+def render_top_header(user: dict, state: dict):
+    """Compact top header: logo (hidden admin tap target) + user info."""
+    logo_tap_button()
+    st.markdown(
+        f'<div class="kt-topbar">👋 <b>{user["name"]}</b> &nbsp; 📱 '
+        f'{user["mobile"]} &nbsp; {status_pill_html(state)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_bottom_nav():
+    """Fixed bottom tab bar. A tap sets menu_page (and reruns)."""
+    current = st.session_state.get("menu_page", "🎙️ ভয়েস বানান")
+    cols = st.columns(len(NAV_ITEMS), gap="small")
+    for col, (key, label, page) in zip(cols, NAV_ITEMS):
+        with col:
+            btn_type = "primary" if current == page else "tertiary"
+            if st.button(label, key=key, type=btn_type,
+                         use_container_width=True):
+                st.session_state["menu_page"] = page
+                st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # Design: warm orange/cream palette, Hind Siliguri, gradient buttons,
 # cards, fade/slide-in animations. Mobile-first.
 # ---------------------------------------------------------------------------
@@ -265,6 +320,51 @@ div[data-testid="stButton"] > button[kind="secondary"] {
 div[role="radiogroup"] label { font-weight: 600; }
 h1, h2, h3 { color: #7a3c00 !important; }
 hr { border-color: #ffe3c2; }
+
+/* --- sidebar: removed as the navigation home (bottom bar replaces it) --- */
+section[data-testid="stSidebar"] { display: none !important; }
+div[data-testid="collapsedControl"] { display: none !important; }
+
+/* --- compact top header (user + trial pill) --- */
+.kt-topbar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+    background: #fff; border: 1px solid #ffe3c2; border-radius: 14px;
+    padding: 8px 12px; margin: 2px 0 10px 0; font-size: 0.95rem;
+    box-shadow: 0 4px 12px rgba(120, 60, 0, 0.07);
+}
+
+/* --- bottom navigation (mobile tab bar, fixed) --- */
+/* The nav is the only horizontal block holding tertiary buttons, so
+   :has() pins the fixed bar to exactly that block. Older browsers
+   without :has() simply show the bar in-flow at the page bottom. */
+div[data-testid="stHorizontalBlock"]:has(button[kind="tertiary"]) {
+    position: fixed !important;
+    bottom: 0; left: 0; right: 0;
+    z-index: 1000000;
+    background: #fffdf8;
+    border-top: 1px solid #ffe3c2;
+    box-shadow: 0 -6px 18px rgba(120, 60, 0, 0.12);
+    padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)) !important;
+    margin: 0 !important;
+}
+div[data-testid="stHorizontalBlock"]:has(button[kind="tertiary"]) div[data-testid="column"] {
+    padding: 0 1px !important;
+}
+div[data-testid="stHorizontalBlock"]:has(button[kind="tertiary"]) button[kind="tertiary"] {
+    background: transparent !important; border: none !important;
+    box-shadow: none !important; color: #8a5a2b !important;
+    font-size: 0.75rem !important; font-weight: 600 !important;
+    padding: 6px 1px !important; border-radius: 12px !important;
+    width: 100% !important; white-space: nowrap !important;
+}
+div[data-testid="stHorizontalBlock"]:has(button[kind="tertiary"]) button[kind="primary"] {
+    font-size: 0.75rem !important; font-weight: 700 !important;
+    padding: 6px 1px !important; border-radius: 12px !important;
+    width: 100% !important; white-space: nowrap !important;
+    box-shadow: 0 3px 10px rgba(255, 122, 24, 0.30) !important;
+}
+/* content must clear the fixed bar */
+div[data-testid="stMainBlockContainer"] { padding-bottom: 120px !important; }
 </style>
 """
 
@@ -1025,7 +1125,7 @@ def page_admin_gate():
 
 def main():
     st.set_page_config(page_title="কিকি টক — বাংলা ভয়েস", page_icon="🎙️",
-                       layout="centered")
+                       layout="centered", initial_sidebar_state="collapsed")
     st.markdown(CSS, unsafe_allow_html=True)
 
     # Hidden admin flow (logo taps -> PIN -> sticker -> PIN). There is no
@@ -1056,42 +1156,21 @@ def main():
         page_auth()
         return
 
-    # ---- logged-in shell ----
+    # ---- logged-in shell: top header + page + fixed bottom nav ----
     state = store.access_state(user)
-    with st.sidebar:
-        logo_tap_button()
-        st.markdown(f"### 👋 {user['name']}")
-        st.write(f"📱 {user['mobile']}")
-        if state["state"] == "trial":
-            st.markdown(f'<span class="kt-pill">⏳ ট্রায়াল — আর {fmt_mins(state["trial_left_s"])}</span>',
-                        unsafe_allow_html=True)
-        elif state["state"] == "active":
-            st.markdown(f'<span class="kt-pill">✅ চালু — আর {bn(state["sub_left_days"])} দিন</span>',
-                        unsafe_allow_html=True)
-        elif state["state"] == "blocked":
-            st.markdown('<span class="kt-pill">🚫 অ্যাকাউন্ট বন্ধ আছে</span>',
-                        unsafe_allow_html=True)
-        else:
-            st.markdown('<span class="kt-pill">⌛ মেয়াদ শেষ — রিনিউ করুন</span>',
-                        unsafe_allow_html=True)
-        st.divider()
-        page = st.radio(
-            "মেনু",
-            ["🎙️ ভয়েস বানান", "💳 পেমেন্ট / রিনিউ", "📏 স্ক্রিপ্টের নিয়ম",
-             "🔐 পাসওয়ার্ড বদলান"],
-            key="menu_page",
-        )
-        st.divider()
-        if st.button("🚪 লগ আউট", use_container_width=True):
-            st.session_state.pop("user_id", None)
-            st.session_state.pop("menu_page", None)
-            st.rerun()
+    render_top_header(user, state)
 
     if not state["has_access"]:
         st.warning("আপনার ট্রায়াল / প্যাকেজের মেয়াদ শেষ হয়েছে — ভয়েস বানাতে "
                    "হলে পেমেন্ট করে প্যাকেজ নিন।")
         page_payment(user)
         return
+
+    page = st.session_state.get("menu_page", "🎙️ ভয়েস বানান")
+    if page == "🚪 লগ আউট":
+        st.session_state.pop("user_id", None)
+        st.session_state.pop("menu_page", None)
+        st.rerun()
 
     if page == "🎙️ ভয়েস বানান":
         page_generate(user)
@@ -1101,6 +1180,8 @@ def main():
         page_rules()
     elif page == "🔐 পাসওয়ার্ড বদলান":
         page_change_password(user)
+
+    render_bottom_nav()
 
 
 if __name__ == "__main__":
