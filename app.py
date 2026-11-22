@@ -3,8 +3,10 @@
 
 দুটি ভয়েস (মডেল ১ আকিব / মডেল ২ কিকি বিগ রিরেকর্ড) এক লগইনে।
 সাইন আপ করলেই ১ ঘণ্টার ফ্রি ট্রায়াল, তারপর ম্যানুয়াল বিকাশ/নগদ
-পেমেন্টে মাসিক ৫০ টাকায় ৩০ দিন আনলিমিটেড। অ্যাডমিন প্যানেল অ্যাপের
-ভেতরেই — পেমেন্ট যাচাই করে এক ক্লিকে অ্যাকাউন্ট চালু করা যায়।
+পেমেন্টে প্যাকেজ অনুযায়ী (১ সপ্তাহ / ১ মাস / ২ মাস) আনলিমিটেড।
+অ্যাডমিন প্যানেল অ্যাপের ভেতরেই — পেমেন্ট যাচাই করে এক ক্লিকে অ্যাকাউন্ট
+চালু করা যায়; পেমেন্টের নম্বর/নির্দেশনা ও প্যাকেজও অ্যাডমিন নিজেই
+বদলাতে পারেন; এক IP থেকে একাধিক অ্যাকাউন্ট ধরার ব্যবস্থা আছে।
 
 ডেটা থাকে প্রাইভেট Hugging Face ডেটাসেটে (store.py দেখুন) — Streamlit
 Cloud রিস্টার্ট হলেও মুছে যায় না, কোনো সার্ভার লাগে না।
@@ -97,6 +99,25 @@ def fmt_mins(seconds: int) -> str:
     if m > 0:
         return f"{bn(m)} মিনিট {bn(s)} সেকেন্ড"
     return f"{bn(s)} সেকেন্ড"
+
+
+def client_info() -> tuple[str, str]:
+    """Client IP + User-Agent from the request headers (best effort).
+
+    Streamlit Cloud sits behind a proxy, so the real IP is the first
+    entry of X-Forwarded-For. Outside a running app (tests, imports)
+    this safely returns ("unknown", "").
+    """
+    ip, ua = "unknown", ""
+    try:
+        raw = dict(st.context.headers)
+        low = {str(k).lower(): v for k, v in raw.items()}
+        fwd = low.get("x-forwarded-for", "") or ""
+        ip = (fwd.split(",")[0].strip() if fwd else "") or "unknown"
+        ua = low.get("user-agent", "") or ""
+    except Exception:
+        pass
+    return ip, ua
 
 
 # ---------------------------------------------------------------------------
@@ -205,10 +226,21 @@ def show_demo_voices():
 
 
 def pricing_card():
+    lines = None
+    try:
+        pkgs = store.get_active_packages()
+        if pkgs:
+            lines = "<br>".join(
+                f"📦 {p['name']} — ৳{bn(p['price'])} • {bn(p['days'])} দিন"
+                for p in pkgs)
+    except Exception:
+        lines = None
+    if lines is None:
+        lines = "📦 ১ মাস — ৳৫০ • ৩০ দিন"
     st.markdown(
         '<div class="kt-card" style="text-align:center;">'
         '<div class="kt-price">৳৫০ <small>/ মাস</small></div>'
-        '<p style="margin:6px 0 0 0;">দুটি ভয়েসই আনলিমিটেড • ৩০ দিন • সাবটাইটেলসহ (SRT / TXT / JSON)<br>'
+        f'<p style="margin:6px 0 0 0;">দুটি ভয়েসই আনলিমিটেড • সাবটাইটেলসহ (SRT / TXT / JSON)<br>{lines}<br>'
         'প্রথমে <b>১ ঘণ্টা ফ্রি ট্রায়াল</b> — আউটপুট শুনে তারপর পেমেন্ট।</p>'
         '</div>',
         unsafe_allow_html=True,
@@ -234,7 +266,8 @@ def page_auth():
         password = st.text_input("পাসওয়ার্ড", type="password", key="login_pw")
         if st.button("🔓 লগইন করুন", type="primary", use_container_width=True):
             try:
-                user = store.login(mobile, password)
+                ip, ua = client_info()
+                user = store.login(mobile, password, client_ip=ip, user_agent=ua)
                 st.session_state["user_id"] = user["id"]
                 st.session_state["menu_page"] = "🎙️ ভয়েস বানান"
                 st.rerun()
@@ -248,10 +281,16 @@ def page_auth():
         st.info("সাইন আপ করলেই **১ ঘণ্টার ফ্রি ট্রায়াল** চালু হবে — দুটি ভয়েসই ব্যবহার করে আউটপুটের মান দেখুন, তারপর পেমেন্টের সিদ্ধান্ত নিন।")
         if st.button("🎉 অ্যাকাউন্ট খুলুন — ফ্রি ট্রায়াল শুরু", type="primary", use_container_width=True):
             try:
-                user = store.signup(name, mobile, password)
+                ip, ua = client_info()
+                user = store.signup(name, mobile, password, client_ip=ip, user_agent=ua)
                 st.session_state["user_id"] = user["id"]
                 st.session_state["menu_page"] = "🎙️ ভয়েস বানান"
-                st.success("অ্যাকাউন্ট খোলা হয়েছে! আপনার ১ ঘণ্টার ফ্রি ট্রায়াল চালু।")
+                if user.get("trial_granted", True):
+                    st.success("অ্যাকাউন্ট খোলা হয়েছে! আপনার ১ ঘণ্টার ফ্রি ট্রায়াল চালু।")
+                else:
+                    st.warning("অ্যাকাউন্ট খোলা হয়েছে! তবে এই ডিভাইস/নেটওয়ার্ক থেকে "
+                               "আগেই ফ্রি ট্রায়াল নেওয়া হয়েছে, তাই এই অ্যাকাউন্টে "
+                               "ট্রায়াল নেই — পেমেন্ট করে প্যাকেজ নিলেই ব্যবহার করতে পারবেন।")
                 time.sleep(1)
                 st.rerun()
             except Exception as exc:
@@ -300,7 +339,7 @@ def page_generate(user: dict):
         st.markdown(
             f'<div class="kt-card">⏳ <b>ফ্রি ট্রায়াল চলছে</b> — আর '
             f'<b>{fmt_mins(state["trial_left_s"])}</b> বাকি। '
-            f'ট্রায়াল শেষ হলে পেমেন্ট করে ৩০ দিনের প্যাকেজ নিন।</div>',
+            f'ট্রায়াল শেষ হলে পেমেন্ট করে প্যাকেজ নিন।</div>',
             unsafe_allow_html=True,
         )
     elif state["state"] == "active":
@@ -447,7 +486,7 @@ def page_generate(user: dict):
 
 def page_payment(user: dict):
     state = store.access_state(user)
-    st.subheader("💳 পেমেন্ট — মাসিক প্যাকেজ")
+    st.subheader("💳 পেমেন্ট — প্যাকেজ নিন")
     pricing_card()
     if state["state"] == "active":
         st.success(f"আপনার প্যাকেজ চালু আছে — আর {bn(state['sub_left_days'])} দিন বাকি। "
@@ -456,21 +495,48 @@ def page_payment(user: dict):
         st.info(f"আপনার ফ্রি ট্রায়াল চলছে — আর {fmt_mins(state['trial_left_s'])} বাকি। "
                 "ট্রায়াল শেষ হলে এখান থেকে পেমেন্ট করে প্যাকেজ নিন।")
 
+    settings = store.get_settings()
+    pkgs = store.get_active_packages()
+    if not pkgs:
+        st.error("এখন কোনো প্যাকেজ চালু নেই — মালিকের সাথে যোগাযোগ করুন।")
+        return
+    pkg_by_id = {p["id"]: p for p in pkgs}
+    default_idx = 0
+    for i, p in enumerate(pkgs):
+        if p["days"] == 30:
+            default_idx = i
+            break
+
+    st.markdown("### 📦 প্যাকেজ বেছে নিন")
+    chosen_id = st.radio(
+        "কোন প্যাকেজটি নিতে চান?",
+        options=[p["id"] for p in pkgs],
+        format_func=lambda pid: (
+            f"{pkg_by_id[pid]['name']} — ৳{bn(pkg_by_id[pid]['price'])} • "
+            f"{bn(pkg_by_id[pid]['days'])} দিন"),
+        index=default_idx,
+        key="pay_pkg",
+    )
+    chosen = pkg_by_id[chosen_id]
+
     st.markdown("### 📱 যেভাবে টাকা পাঠাবেন")
-    st.write("১. নিচের নম্বরটি কপি করে বিকাশ বা নগদ অ্যাপে **Send Money** করুন।")
-    st.write("২. টাকা পাঠিয়ে এখানে ফিরে **ট্রানজাকশন আইডি** অথবা **স্ক্রিনশট** জমা দিন।")
-    st.write("৩. মালিক টাকা মিলিয়ে যাচাই করে আপনার অ্যাকাউন্ট **৩০ দিনের জন্য** চালু করে দেবেন।")
+    for line in settings["instructions"].splitlines():
+        if line.strip():
+            st.write(line)
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("**বিকাশ (Send Money)**")
-        st.code(BKASH_NUMBER)
+        st.code(settings["bkash_number"])
     with col2:
         st.markdown("**নগদ (Send Money)**")
-        st.code(NAGAD_NUMBER)
+        st.code(settings["nagad_number"])
+    if (settings["bkash_number"] in ("", store.PLACEHOLDER_NUMBER)
+            and settings["nagad_number"] in ("", store.PLACEHOLDER_NUMBER)):
+        st.caption("মালিক এখনো পেমেন্টের নম্বর বসাননি — নম্বর দেখা গেলে তারপর টাকা পাঠাবেন।")
 
     st.markdown("### 🧾 পেমেন্ট জমা দিন")
     txn_id = st.text_input("ট্রানজাকশন আইডি", placeholder="যেমন: 9HX7K2PQR1", key="pay_txn")
-    amount = st.number_input("অ্যামাউন্ট (টাকা)", min_value=1, value=store.PRICE_TAKA, step=1)
+    amount = st.number_input("অ্যামাউন্ট (টাকা)", min_value=1, value=int(chosen["price"]), step=1)
     shot = st.file_uploader("পেমেন্টের স্ক্রিনশট (যদি থাকে)", type=["png", "jpg", "jpeg"])
     if st.button("📤 পেমেন্ট জমা দিন", type="primary", use_container_width=True):
         try:
@@ -480,8 +546,10 @@ def page_payment(user: dict):
                 ext = shot.name.rsplit(".", 1)[-1].lower()
                 if ext not in ("png", "jpg", "jpeg"):
                     ext = "png"
-            pay = store.submit_payment(user, txn_id, int(amount), shot_bytes, ext)
-            st.success("পেমেন্ট জমা হয়েছে! মালিক যাচাই করে অ্যাকাউন্ট চালু করে দেবেন। "
+            pay = store.submit_payment(user, txn_id, int(amount), shot_bytes, ext,
+                                       package_id=chosen["id"])
+            st.success(f"পেমেন্ট জমা হয়েছে! মালিক যাচাই করে {chosen['name']} প্যাকেজটি "
+                       f"({bn(chosen['days'])} দিন) চালু করে দেবেন। "
                        "লগইন করলেই মেয়াদ দেখতে পাবেন।")
             st.info(f"আপনার জমা নম্বর: {pay['id']}")
         except Exception as exc:
@@ -494,7 +562,8 @@ def page_payment(user: dict):
     for p in mine:
         status_bn = {"pending": "⏳ যাচাই চলছে", "approved": "✅ চালু হয়েছে",
                      "rejected": "❌ বাতিল হয়েছে"}.get(p["status"], p["status"])
-        st.write(f"**{p['submitted_at'][:16]}** • {bn(p['amount'])} টাকা • "
+        pkg_txt = f" • {p.get('package_name')}" if p.get("package_name") else ""
+        st.write(f"**{p['submitted_at'][:16]}** • {bn(p['amount'])} টাকা{pkg_txt} • "
                  f"Txn: {p['txn_id'] or '—'} • {status_bn}")
 
 
@@ -593,9 +662,12 @@ def page_admin():
     if not pending:
         st.write("যাচাই করার মতো কোনো পেমেন্ট নেই।")
     for p in pending:
+        pkg_days = int(p.get("package_days") or store.SUBSCRIPTION_DAYS)
+        pkg_txt = f"প্যাকেজ: <b>{p.get('package_name') or 'মাসিক প্যাকেজ'}</b> • " if p.get("package_name") else ""
         with st.container():
             st.markdown(
                 f'<div class="kt-card"><b>{p["name"]}</b> ({p["mobile"]})<br>'
+                f'{pkg_txt}'
                 f'ট্রানজাকশন আইডি: <b>{p["txn_id"] or "—"}</b> • '
                 f'অ্যামাউন্ট: <b>{bn(p["amount"])} টাকা</b><br>'
                 f'জমা: {p["submitted_at"]}</div>',
@@ -609,11 +681,11 @@ def page_admin():
                     st.warning(f"স্ক্রিনশট খোলা যায়নি: {exc}")
             b1, b2 = st.columns(2)
             with b1:
-                if st.button("✅ অ্যাপ্রুভ — ৩০ দিন চালু করুন",
+                if st.button(f"✅ অ্যাপ্রুভ — {bn(pkg_days)} দিন চালু করুন",
                              key=f"ap_{p['id']}", type="primary", use_container_width=True):
                     try:
                         store.decide_payment(p["id"], approve=True)
-                        st.success(f"{p['name']}-এর অ্যাকাউন্ট ৩০ দিনের জন্য চালু হয়েছে।")
+                        st.success(f"{p['name']}-এর অ্যাকাউন্ট {bn(pkg_days)} দিনের জন্য চালু হয়েছে।")
                         st.rerun()
                     except Exception as exc:
                         st.error(str(exc))
@@ -625,6 +697,114 @@ def page_admin():
                         st.rerun()
                     except Exception as exc:
                         st.error(str(exc))
+
+    st.markdown("### 💳 পেমেন্ট সেটিংস")
+    st.write("এখানে বদলালেই পেমেন্ট পেজে নতুন নম্বর ও নির্দেশনা দেখাবে — কোড বদলাতে হয় না।")
+    settings = store.get_settings()
+    with st.form("payment_settings"):
+        bk = st.text_input("বিকাশ নম্বর (Send Money)", value=settings["bkash_number"])
+        ng = st.text_input("নগদ নম্বর (Send Money)", value=settings["nagad_number"])
+        ins = st.text_area("টাকা পাঠানোর নির্দেশনা (ইউজারকে দেখাবে)",
+                           value=settings["instructions"], height=170)
+        max_tr = st.number_input(
+            "এক IP থেকে সর্বোচ্চ ফ্রি ট্রায়াল (টি অ্যাকাউন্ট)",
+            min_value=0, max_value=10, value=int(settings["max_trials_per_ip"]),
+            help="এই সংখ্যক ট্রায়ালের পর একই IP থেকে নতুন অ্যাকাউন্টে আর ফ্রি ট্রায়াল থাকবে না — অ্যাকাউন্ট খুলবে, তবে পেমেন্ট করে ব্যবহার করতে হবে।")
+        saved = st.form_submit_button("💾 সেটিংস সংরক্ষণ করুন", type="primary")
+    if saved:
+        try:
+            store.save_settings({"bkash_number": bk.strip(),
+                                 "nagad_number": ng.strip(),
+                                 "instructions": ins,
+                                 "max_trials_per_ip": int(max_tr)})
+            st.success("পেমেন্ট সেটিংস সংরক্ষণ হয়েছে।")
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
+
+    st.markdown("### 📦 প্যাকেজ")
+    st.write("নতুন প্যাকেজ যোগ করুন, দাম/মেয়াদ বদলান, বা বন্ধ করুন। বন্ধ করা প্যাকেজ "
+             "আর কেনা যাবে না, তবে আগের পেমেন্টের হিসাব ঠিক থাকবে (মুছে ফেলা হয় না)।")
+    for p in store.get_packages():
+        is_on = p.get("active", True)
+        with st.expander(f"{p['name']} — ৳{bn(p['price'])} • {bn(p['days'])} দিন "
+                         f"{'(চালু)' if is_on else '(বন্ধ)'}"):
+            new_name = st.text_input("নাম", value=p["name"], key=f"pk_name_{p['id']}")
+            new_days = st.number_input("মেয়াদ (দিন)", min_value=1, max_value=365,
+                                       value=int(p["days"]), key=f"pk_days_{p['id']}")
+            new_price = st.number_input("দাম (টাকা)", min_value=1,
+                                        value=int(p["price"]), key=f"pk_price_{p['id']}")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("💾 বদলান", key=f"pk_save_{p['id']}", use_container_width=True):
+                    try:
+                        store.update_package(p["id"], name=new_name,
+                                             days=int(new_days), price=int(new_price))
+                        st.success("প্যাকেজ বদলে গেছে।")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(str(exc))
+            with c2:
+                label = "⏸️ বন্ধ করুন" if is_on else "▶️ চালু করুন"
+                if st.button(label, key=f"pk_tgl_{p['id']}", use_container_width=True):
+                    store.set_package_active(p["id"], not is_on)
+                    st.rerun()
+    with st.form("add_package"):
+        st.write("**নতুন প্যাকেজ যোগ করুন**")
+        an = st.text_input("নাম (যেমন: ৩ দিন)")
+        ad = st.number_input("মেয়াদ (দিন)", min_value=1, max_value=365, value=3)
+        ap = st.number_input("দাম (টাকা)", min_value=1, value=10)
+        if st.form_submit_button("➕ প্যাকেজ যোগ করুন", type="primary"):
+            try:
+                store.add_package(an, int(ad), int(ap))
+                st.success("নতুন প্যাকেজ যোগ হয়েছে।")
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+    st.markdown("### 🔍 সন্দেহজনক অ্যাকাউন্ট (এক IP থেকে একাধিক অ্যাকাউন্ট)")
+    st.caption("একই IP থেকে ২টির বেশি অ্যাকাউন্ট খোলা হলে এখানে দেখাবে — ট্রায়ালের "
+               "অপব্যবহার ধরার জন্য। তবে শেয়ার করা ওয়াই-ফাইতেও এমন হতে পারে, তাই "
+               "যাচাই না করে বন্ধ করবেন না। একই IP-র সব অ্যাকাউন্ট একসাথে দেখে সিদ্ধান্ত নিন।")
+    groups = store.same_ip_groups()
+    if not groups:
+        st.write("সন্দেহজনক কোনো গ্রুপ নেই।")
+    for g in groups:
+        with st.expander(f"🌐 IP {g['ip']} — {bn(len(g['users']))}টি অ্যাকাউন্ট"):
+            for u in g["users"]:
+                stt = store.access_state(u)
+                state_bn = {"trial": f"⏳ ট্রায়াল — আর {fmt_mins(stt['trial_left_s'])}",
+                            "active": f"✅ চালু — আর {bn(stt['sub_left_days'])} দিন",
+                            "expired": "⌛ মেয়াদ শেষ",
+                            "blocked": "🚫 বন্ধ আছে"}.get(stt["state"], stt["state"])
+                st.write(f"**{u['name']}** • {u['mobile']} • "
+                         f"সাইন আপ: {u.get('created_at', '')[:16]} • {state_bn} • "
+                         f"ট্রায়াল: {'হ্যাঁ' if u.get('trial_granted', True) else 'না'}")
+                sc1, sc2 = st.columns(2)
+                with sc1:
+                    label = "🚫 বন্ধ করুন" if u.get("active", True) else "✅ চালু করুন"
+                    if st.button(label, key=f"sus_blk_{u['id']}", use_container_width=True):
+                        store.set_user_active(u["id"], not u.get("active", True))
+                        st.rerun()
+                with sc2:
+                    if st.button("🎁 ট্রায়াল দিন (১ ঘণ্টা)", key=f"sus_tr_{u['id']}",
+                                 use_container_width=True):
+                        store.grant_trial(u["id"])
+                        st.success(f"{u['name']}-কে ১ ঘণ্টার ট্রায়াল দেওয়া হয়েছে।")
+                        st.rerun()
+            gb1, gb2 = st.columns(2)
+            with gb1:
+                if st.button("🚫 পুরো গ্রুপ বন্ধ করুন", key=f"grp_blk_{g['ip']}",
+                             use_container_width=True):
+                    for u in g["users"]:
+                        store.set_user_active(u["id"], False)
+                    st.rerun()
+            with gb2:
+                if st.button("✅ পুরো গ্রুপ চালু করুন", key=f"grp_un_{g['ip']}",
+                             use_container_width=True):
+                    for u in g["users"]:
+                        store.set_user_active(u["id"], True)
+                    st.rerun()
 
     st.markdown("### 👥 ব্যবহারকারী ও মেয়াদ")
     for u in users:
