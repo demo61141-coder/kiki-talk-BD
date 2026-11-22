@@ -17,5 +17,9 @@
 - `index.html` — হিরো, ডেমো কণ্ঠ, ধাপ, মূল্য, নিয়ম, FAQ, শেষ CTA।
 - `style.css` — ডিজাইন + অ্যানিমেশন (fade-up, বোতামের ঝলক, কার্ড হোভার)।
 - `script.js` — স্ক্রলে ভেসে ওঠা (IntersectionObserver, কোনো লাইব্রেরি নয়)।
-- `audio/` — দুটি ডেমো ভয়েস (আকিব / কিকি বিগ রিরেকর্ড, একই ঢাকা বাক্য)।
+- `audio/` — দুটি ডেমো ভয়েসের স্থানীয় কপি (আকিব / কিকি বিগ রিরেকর্ড, একই ঢাকা বাক্য)।
+  লাইভ পেজে অডিও আসে পাবলিক Hugging Face মডেল রেপো থেকে (GitHub-এ পুশ
+  শুধু টেক্সট ফাইল নেয়, তাই wav ফাইল রেপোতে ওঠে না):
+  `demoqqq/banglatts-akib/demo_akib.wav` ও
+  `demoqqq/banglatts-kiki-big-rerecord/demo_kiki.wav`।
 - `vercel.json` — clean URLs।

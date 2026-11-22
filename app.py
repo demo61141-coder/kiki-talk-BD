@@ -31,6 +31,46 @@ APP_DIR = Path(__file__).resolve().parent
 DEMO_AKIB = APP_DIR / "assets" / "demo_akib.wav"
 DEMO_KIKI = APP_DIR / "assets" / "demo_kiki.wav"
 
+# Demo voices: the GitHub push route is UTF-8 text-only, so the wav
+# binaries live on the PUBLIC HF model repos instead. The app uses the
+# local assets when present, otherwise downloads them from HF (verified
+# by exact size + MD5) on first use.
+DEMO_URLS = {
+    "akib": "https://huggingface.co/demoqqq/banglatts-akib/resolve/main/demo_akib.wav",
+    "kiki": "https://huggingface.co/demoqqq/banglatts-kiki-big-rerecord/resolve/main/demo_kiki.wav",
+}
+DEMO_MD5 = {"akib": "1bc6794a822f198f4a76c1b21c1875ef",
+            "kiki": "34a960a8c67468c7d03423336b11a7b3"}
+DEMO_SIZE = {"akib": 133164, "kiki": 143404}
+DEMO_LOCAL = {"akib": DEMO_AKIB, "kiki": DEMO_KIKI}
+
+
+def ensure_demo_wav(model_key: str, dest: Path | None = None) -> Path | None:
+    """Local demo wav if present, else download it from HF (verified).
+
+    Returns the wav path, or None if it cannot be obtained.
+    """
+    import hashlib
+    import urllib.request
+
+    dest = Path(dest) if dest is not None else DEMO_LOCAL[model_key]
+    try:
+        if dest.exists() and dest.stat().st_size == DEMO_SIZE[model_key]:
+            return dest
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        req = urllib.request.Request(DEMO_URLS[model_key],
+                                     headers={"User-Agent": "kiki-talk/1.0"})
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = resp.read()
+        dest.write_bytes(data)
+        if (dest.stat().st_size != DEMO_SIZE[model_key]
+                or hashlib.md5(data).hexdigest() != DEMO_MD5[model_key]):
+            dest.unlink(missing_ok=True)
+            return None
+        return dest
+    except Exception:
+        return None
+
 SAMPLE_SCRIPT = (
     "পররাষ্ট্র প্রতিমন্ত্রী শামা ওবায়েদ ইসলাম বলেছেন, নাগরিক হলেই পাসপোর্ট "
     "পাওয়া যাবে, এমন কোনো নিশ্চয়তা নেই। "
@@ -149,15 +189,17 @@ def show_demo_voices():
     with col1:
         st.markdown('<div class="kt-demo"><b>🎙️ মডেল ১ — আকিব</b></div>',
                     unsafe_allow_html=True)
-        if DEMO_AKIB.exists():
-            st.audio(DEMO_AKIB.read_bytes(), format="audio/wav")
+        demo = ensure_demo_wav("akib")
+        if demo is not None:
+            st.audio(demo.read_bytes(), format="audio/wav")
         else:
             st.info("ডেমো শীঘ্রই আসছে।")
     with col2:
         st.markdown('<div class="kt-demo"><b>🎙️ মডেল ২ — কিকি বিগ রিরেকর্ড</b></div>',
                     unsafe_allow_html=True)
-        if DEMO_KIKI.exists():
-            st.audio(DEMO_KIKI.read_bytes(), format="audio/wav")
+        demo = ensure_demo_wav("kiki")
+        if demo is not None:
+            st.audio(demo.read_bytes(), format="audio/wav")
         else:
             st.info("ডেমো শীঘ্রই আসছে।")
 

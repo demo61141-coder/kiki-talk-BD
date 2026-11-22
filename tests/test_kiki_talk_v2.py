@@ -403,8 +403,14 @@ try:
         check(f"5h. landing/{f} non-empty", p.exists() and p.stat().st_size > 100)
     def _md5(p):
         return hashlib.md5(Path(p).read_bytes()).hexdigest()
-    check("5i. landing demo audio matches samples",
-          _md5(landing / "audio" / "demo_akib.wav")
+    check("5i. landing demo audio = HF URLs (binaries live on HF, "
+          "GitHub push is text-only)",
+          "https://huggingface.co/demoqqq/banglatts-akib/resolve/main/demo_akib.wav"
+          in idx
+          and "https://huggingface.co/demoqqq/banglatts-kiki-big-rerecord/resolve/main/demo_kiki.wav"
+          in idx
+          and "audio/demo_akib.wav" not in idx
+          and _md5(landing / "audio" / "demo_akib.wav")
           == _md5("assets/demo_akib.wav")
           and _md5(landing / "audio" / "demo_kiki_big_rerecord.wav")
           == _md5("assets/demo_kiki.wav"))
@@ -413,6 +419,17 @@ try:
           == "1bc6794a822f198f4a76c1b21c1875ef"
           and _md5("assets/demo_kiki.wav")
           == "34a960a8c67468c7d03423336b11a7b3")
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = Path(tmp) / "demo_akib.wav"
+        got = kiki_app.ensure_demo_wav("akib", dest=dest)
+        check("5k. ensure_demo_wav downloads from HF (verified)",
+              got is not None and got.exists()
+              and _md5(got) == "1bc6794a822f198f4a76c1b21c1875ef",
+              f"got={got}")
+        got2 = kiki_app.ensure_demo_wav("akib", dest=dest)
+        check("5l. ensure_demo_wav reuses local file",
+              got2 is not None and got2 == dest)
 except Exception:
     print("APP/LANDING SECTION FAILED", flush=True)
     traceback.print_exc()
