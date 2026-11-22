@@ -768,3 +768,81 @@ def admin_check_password(password: str) -> bool:
     if not data.get("password_hash"):
         return False
     return check_password(password, data["salt"], data["password_hash"])
+
+
+# ---------------------------------------------------------------------------
+# Admin PIN (hidden access: 5 logo taps -> PIN -> decoy sticker -> PIN).
+# The admin credential is a 4-DIGIT PIN, stored as a salted PBKDF2 hash
+# with kind="pin". An admin.json without kind="pin" holds a legacy
+# free-form password from the old version and forces fresh PIN setup.
+# The old admin_set_password / admin_check_password above are kept for
+# the v2 test suite; the app no longer uses them.
+# ---------------------------------------------------------------------------
+
+def normalize_pin(pin) -> str:
+    """Bengali digits -> ASCII, strip spaces. The stored/checked form."""
+    p = str(pin or "").strip()
+    return p.translate(str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")).replace(" ", "")
+
+
+def valid_pin(pin) -> bool:
+    """A PIN is exactly 4 digits (Bengali digits accepted, normalized)."""
+    p = normalize_pin(pin)
+    return len(p) == 4 and p.isdigit()
+
+
+def admin_needs_pin_setup() -> bool:
+    """True when no PIN is set: admin.json missing/empty, or it holds a
+    legacy (non-PIN) password hash. A read failure also returns True —
+    admin_set_pin refuses to overwrite in that case (see below), so a
+    transient failure can never destroy an existing PIN."""
+    try:
+        data = load_json("admin.json")
+    except Exception:
+        return True
+    if not data.get("password_hash"):
+        return True
+    return data.get("kind") != "pin"
+
+
+def admin_set_pin(pin: str) -> None:
+    """Set the 4-digit admin PIN (salted PBKDF2 hash, kind='pin').
+    Raises if a PIN is already set. Refuses to overwrite when the
+    current credential cannot be read (network failure), so a blind
+    overwrite is impossible; a legacy (non-PIN) credential IS replaced
+    — that is the intended migration to the PIN flow."""
+    if not valid_pin(pin):
+        raise ValueError("পিন ঠিক ৪ সংখ্যার হতে হবে (শুধু সংখ্যা)।")
+    try:
+        data = load_json("admin.json")
+    except Exception:
+        raise RuntimeError(
+            "অ্যাডমিন তথ্য খোলা যায়নি — নেটওয়ার্ক দেখে আবার চেষ্টা করুন।"
+        )
+    if data.get("password_hash") and data.get("kind") == "pin":
+        raise ValueError("অ্যাডমিন পিন আগেই সেট করা আছে।")
+    salt, pw_hash = hash_password(normalize_pin(pin))
+    save_json("admin.json", {"kind": "pin", "salt": salt,
+                             "password_hash": pw_hash})
+
+
+def admin_check_pin(pin: str) -> bool:
+    """True only for the correct 4-digit PIN. A legacy hash never
+    matches, and a non-4-digit input never matches."""
+    if not valid_pin(pin):
+        return False
+    try:
+        data = load_json("admin.json")
+    except Exception:
+        return False
+    if data.get("kind") != "pin" or not data.get("password_hash"):
+        return False
+    return check_password(normalize_pin(pin), data["salt"],
+                          data["password_hash"])
+
+
+def admin_reset_pin() -> None:
+    """Clear the admin PIN (forces fresh setup on next admin access).
+    Used by tests/cleanup; NOT exposed in the app UI."""
+    save_json("admin.json", {"salt": None, "password_hash": None,
+                             "kind": None})

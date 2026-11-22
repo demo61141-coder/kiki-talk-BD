@@ -4,7 +4,8 @@
 দুটি ভয়েস (মডেল ১ আকিব / মডেল ২ কিকি বিগ রিরেকর্ড) এক লগইনে।
 সাইন আপ করলেই ১ ঘণ্টার ফ্রি ট্রায়াল, তারপর ম্যানুয়াল বিকাশ/নগদ
 পেমেন্টে প্যাকেজ অনুযায়ী (১ সপ্তাহ / ১ মাস / ২ মাস) আনলিমিটেড।
-অ্যাডমিন প্যানেল অ্যাপের ভেতরেই — পেমেন্ট যাচাই করে এক ক্লিকে অ্যাকাউন্ট
+অ্যাডমিন প্যানেল অ্যাপের ভেতরেই — লুকানো প্রবেশপথ (কোনো বাটন বা লিংক
+নেই); ৪ সংখ্যার পিন দিয়ে খোলে। পেমেন্ট যাচাই করে এক ক্লিকে অ্যাকাউন্ট
 চালু করা যায়; পেমেন্টের নম্বর/নির্দেশনা ও প্যাকেজও অ্যাডমিন নিজেই
 বদলাতে পারেন; এক IP থেকে একাধিক অ্যাকাউন্ট ধরার ব্যবস্থা আছে।
 
@@ -121,6 +122,59 @@ def client_info() -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Hidden admin access: logo taps -> PIN -> decoy sticker -> PIN -> panel.
+# There is NO visible admin button and NO ?admin=1 route anywhere in
+# the app. The logo/title ("🎙️ কিকি টক") is the tap target on every
+# page; it renders as plain title text (tertiary button), not a button.
+# ---------------------------------------------------------------------------
+
+LOGO_TAPS_NEEDED = 5
+STICKER_TAPS_NEEDED = 5
+_PIN_KEYS = ("pin_input_pin1", "pin_input_pin2", "pin_setup_1",
+             "pin_setup_2", "puzzle_answer")
+
+
+def logo_tap_target(needs_setup: bool, taps: int) -> str | None:
+    """Pure logic: after a logo tap, which admin stage opens once the
+    5-tap threshold is reached (None = keep tapping)."""
+    if taps >= LOGO_TAPS_NEEDED:
+        return "pin_setup" if needs_setup else "pin1"
+    return None
+
+
+def sticker_tap_target(taps: int) -> str | None:
+    """Pure logic: after a sticker tap, which stage opens at 5 taps."""
+    if taps >= STICKER_TAPS_NEEDED:
+        return "pin2"
+    return None
+
+
+def _reset_admin_flow(msg: str | None = None):
+    """Leave the admin flow: clear counters, stage, auth flag and any
+    typed PIN / puzzle text. `msg` is shown once on the normal screen."""
+    st.session_state["logo_taps"] = 0
+    st.session_state["sticker_taps"] = 0
+    st.session_state["admin_stage"] = None
+    st.session_state["admin_ok"] = False
+    for key in _PIN_KEYS:
+        st.session_state.pop(key, None)
+    if msg:
+        st.session_state["admin_msg"] = msg
+
+
+def logo_tap_button():
+    """The app title, tappable. 5 taps opens the hidden admin flow."""
+    if st.button("🎙️ কিকি টক", key="logo_tap", type="tertiary"):
+        taps = int(st.session_state.get("logo_taps", 0)) + 1
+        st.session_state["logo_taps"] = taps
+        target = logo_tap_target(store.admin_needs_pin_setup(), taps)
+        if target:
+            st.session_state["logo_taps"] = 0
+            st.session_state["admin_stage"] = target
+            st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # Design: warm orange/cream palette, Hind Siliguri, gradient buttons,
 # cards, fade/slide-in animations. Mobile-first.
 # ---------------------------------------------------------------------------
@@ -158,6 +212,19 @@ div[data-testid="stButton"] > button[kind="secondary"] {
     background: #ffffff !important; color: #e56b00 !important;
     border: 2px solid #ffb347 !important;
 }
+/* logo tap target: a tertiary button that looks like plain title text,
+   not a button — the hidden admin entry point (5 taps). */
+.stButton > button[kind="tertiary"] {
+    background: transparent !important; border: none !important;
+    box-shadow: none !important; color: #7a3c00 !important;
+    font-size: 1.5rem !important; font-weight: 700 !important;
+    padding: 0.1rem 0.3rem !important; border-radius: 10px !important;
+}
+.stButton > button[kind="tertiary"]:hover {
+    background: rgba(255, 122, 24, 0.10) !important;
+    box-shadow: none !important; transform: none !important; filter: none !important;
+}
+.stButton > button[kind="tertiary"]:active { transform: scale(0.98) !important; }
 
 /* --- cards --- */
 .kt-card {
@@ -198,6 +265,29 @@ div[data-testid="stButton"] > button[kind="secondary"] {
 div[role="radiogroup"] label { font-weight: 600; }
 h1, h2, h3 { color: #7a3c00 !important; }
 hr { border-color: #ffe3c2; }
+</style>
+"""
+
+# Decoy sticker screen CSS — injected ONLY while the sticker screen is
+# shown, so primary buttons on other pages keep their normal look. The
+# sticker is a primary button restyled as a bright, slightly rotated
+# sticker card; the textbox submit / back buttons there are secondary.
+STICKER_CSS = """
+<style>
+div[data-testid="stButton"] > button[kind="primary"] {
+    transform: rotate(-2deg) !important;
+    border-radius: 20px !important;
+    border: 3px dashed #fff !important;
+    background: linear-gradient(135deg, #ffe066 0%, #ff9f43 100%) !important;
+    color: #7a3c00 !important;
+    font-size: 1.4rem !important; font-weight: 700 !important;
+    padding: 1.1rem 1.2rem !important;
+    box-shadow: 0 8px 20px rgba(0,0,0,0.18) !important;
+}
+div[data-testid="stButton"] > button[kind="primary"]:hover {
+    transform: rotate(-2deg) scale(1.02) !important;
+    filter: brightness(1.03);
+}
 </style>
 """
 
@@ -252,8 +342,9 @@ def pricing_card():
 # ---------------------------------------------------------------------------
 
 def page_auth():
+    logo_tap_button()
     st.markdown(
-        '<div class="kt-hero"><h1>🎙️ কিকি টক</h1>'
+        '<div class="kt-hero">'
         '<p>বাংলা ভয়েসে আপনার কনটেন্ট — দুটি ভালো ভয়েস, এক লগইনে।</p></div>',
         unsafe_allow_html=True,
     )
@@ -295,11 +386,6 @@ def page_auth():
                 st.rerun()
             except Exception as exc:
                 st.error(str(exc))
-
-    st.divider()
-    if st.button("🛡️ অ্যাডমিন প্যানেল", use_container_width=False):
-        st.session_state["show_admin"] = True
-        st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -614,39 +700,12 @@ def page_admin():
         unsafe_allow_html=True,
     )
     if st.button("← অ্যাপে ফিরে যান"):
-        st.session_state["show_admin"] = False
+        _reset_admin_flow()
         st.rerun()
 
-    if not store.admin_is_set_up():
-        st.warning("অ্যাডমিন পাসওয়ার্ড এখনো সেট করা হয়নি। প্রথমবার এখানেই সেট করুন — "
-                   "এই পাসওয়ার্ডটি মনে রাখবেন, চ্যাটে বা কোথাও লিখবেন না।")
-        pw1 = st.text_input("অ্যাডমিন পাসওয়ার্ড সেট করুন (কমপক্ষে ৮ অক্ষর)",
-                            type="password", key="adm_set1")
-        pw2 = st.text_input("আবার লিখুন", type="password", key="adm_set2")
-        if st.button("🔒 পাসওয়ার্ড সেট করুন", type="primary", use_container_width=True):
-            if pw1 != pw2:
-                st.error("দুবার এক হয়নি।")
-            else:
-                try:
-                    store.admin_set_password(pw1)
-                    st.session_state["admin_ok"] = True
-                    st.success("অ্যাডমিন পাসওয়ার্ড সেট হয়েছে।")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(str(exc))
-        return
-
-    if not st.session_state.get("admin_ok"):
-        pw = st.text_input("অ্যাডমিন পাসওয়ার্ড", type="password", key="adm_login")
-        if st.button("🔓 ঢুকুন", type="primary", use_container_width=True):
-            if store.admin_check_password(pw):
-                st.session_state["admin_ok"] = True
-                st.rerun()
-            else:
-                st.error("পাসওয়ার্ড ভুল হয়েছে।")
-        return
-
     # ---- logged in as admin ----
+    # (PIN setup / verification happens in page_admin_gate before this
+    # function is called, so no password form lives here anymore.)
     users = store.list_users()
     pending = store.list_payments(status="pending")
     n_trial = sum(1 for u in users if store.access_state(u)["state"] == "trial")
@@ -838,6 +897,122 @@ def page_admin():
 
 
 # ---------------------------------------------------------------------------
+# Hidden admin gate: pin_setup -> pin1 -> sticker -> pin2 -> open.
+# The admin panel itself (page_admin) only renders at stage "open".
+# ---------------------------------------------------------------------------
+
+def _pin_setup_screen():
+    """First-run (or legacy-credential) PIN setup: choose a 4-digit PIN."""
+    st.markdown(
+        '<div class="kt-card"><h3>🔐 অ্যাডমিন পিন সেট করুন</h3>'
+        '<p>প্রথমবার ৪ সংখ্যার একটি পিন বেছে নিন — এই পিন দিয়েই পরে '
+        'অ্যাডমিন প্যানেল খুলবে। পিনটি মনে রাখবেন, কাউকে জানাবেন না।</p></div>',
+        unsafe_allow_html=True,
+    )
+    pin1 = st.text_input("৪ সংখ্যার পিন", type="password", max_chars=4,
+                         key="pin_setup_1")
+    pin2 = st.text_input("পিনটি আবার লিখুন", type="password", max_chars=4,
+                         key="pin_setup_2")
+    if st.button("🔒 পিন সেট করুন", type="primary", use_container_width=True):
+        if not store.valid_pin(pin1) or not store.valid_pin(pin2):
+            st.error("পিন ঠিক ৪ সংখ্যার হতে হবে (শুধু সংখ্যা)।")
+        elif store.normalize_pin(pin1) != store.normalize_pin(pin2):
+            st.error("দুবার এক হয়নি — আবার লিখুন।")
+        else:
+            try:
+                store.admin_set_pin(pin1)
+                st.session_state["admin_stage"] = "open"
+                st.session_state["admin_ok"] = True
+                for key in ("pin_setup_1", "pin_setup_2"):
+                    st.session_state.pop(key, None)
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+    if st.button("← ফিরে যান", use_container_width=True):
+        _reset_admin_flow()
+        st.rerun()
+
+
+def _pin_screen(stage: str):
+    """PIN entry (stage 'pin1' or 'pin2'). Correct PIN moves forward;
+    a wrong PIN clears everything and returns to the normal app."""
+    st.markdown(
+        '<div class="kt-card"><h3>🔢 পিন দিন</h3>'
+        '<p>অ্যাডমিন পিনটি লিখুন।</p></div>',
+        unsafe_allow_html=True,
+    )
+    pin = st.text_input("৪ সংখ্যার পিন", type="password", max_chars=4,
+                        key=f"pin_input_{stage}")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔓 যাচাই করুন", type="primary",
+                     key=f"pin_go_{stage}", use_container_width=True):
+            if store.admin_check_pin(pin):
+                st.session_state.pop(f"pin_input_{stage}", None)
+                if stage == "pin1":
+                    st.session_state["admin_stage"] = "sticker"
+                    st.session_state["sticker_taps"] = 0
+                else:  # pin2
+                    st.session_state["admin_stage"] = "open"
+                    st.session_state["admin_ok"] = True
+                st.rerun()
+            else:
+                _reset_admin_flow("❌ পিন ভুল হয়েছে।")
+                st.rerun()
+    with col2:
+        if st.button("← ফিরে যান", key=f"pin_back_{stage}",
+                     use_container_width=True):
+            _reset_admin_flow()
+            st.rerun()
+
+
+def _sticker_screen():
+    """Decoy: a sticker that never opens from the textbox. Any answer
+    submitted in the textbox fails and stays here — no hint is shown
+    about tapping. Tapping the sticker itself 5 times opens the second
+    PIN pad."""
+    st.markdown(STICKER_CSS, unsafe_allow_html=True)
+    if st.button("🧩 Solve the puzzle", key="sticker_tap", type="primary",
+                 use_container_width=True):
+        taps = int(st.session_state.get("sticker_taps", 0)) + 1
+        st.session_state["sticker_taps"] = taps
+        if sticker_tap_target(taps) == "pin2":
+            st.session_state["sticker_taps"] = 0
+            st.session_state.pop("puzzle_answer", None)
+            st.session_state["admin_stage"] = "pin2"
+            st.rerun()
+    st.write("নিচের বাক্সে উত্তর লিখুন — সঠিক উত্তর দিলেই খুলবে।")
+    st.text_input("উত্তর", key="puzzle_answer", placeholder="উত্তর লিখুন")
+    if st.button("✅ জমা দিন", key="puzzle_submit", use_container_width=True):
+        ans = st.session_state.get("puzzle_answer", "")
+        if not (ans or "").strip():
+            st.warning("আগে উত্তর লিখুন।")
+        else:
+            st.error("❌ ভুল উত্তর! আবার চেষ্টা করুন।")
+    if st.button("← ফিরে যান", key="sticker_back", use_container_width=True):
+        _reset_admin_flow()
+        st.rerun()
+
+
+def page_admin_gate():
+    """Hidden admin flow state machine."""
+    stage = st.session_state.get("admin_stage")
+    if stage == "open":
+        page_admin()
+    elif stage == "pin_setup":
+        _pin_setup_screen()
+    elif stage == "pin1":
+        _pin_screen("pin1")
+    elif stage == "sticker":
+        _sticker_screen()
+    elif stage == "pin2":
+        _pin_screen("pin2")
+    else:
+        _reset_admin_flow()
+        st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -846,15 +1021,18 @@ def main():
                        layout="centered")
     st.markdown(CSS, unsafe_allow_html=True)
 
-    # Admin page: ?admin=1 or sidebar button
-    try:
-        if st.query_params.get("admin") == "1":
-            st.session_state["show_admin"] = True
-    except Exception:
-        pass
-    if st.session_state.get("show_admin"):
-        page_admin()
+    # Hidden admin flow (logo taps -> PIN -> sticker -> PIN). There is no
+    # visible admin button and no ?admin=1 route anywhere in the app.
+    if st.session_state.get("admin_stage") in (
+            "pin_setup", "pin1", "sticker", "pin2", "open"):
+        page_admin_gate()
         return
+
+    # One-shot message from the admin flow (e.g. wrong PIN), shown once
+    # on the normal screen, then cleared.
+    _msg = st.session_state.pop("admin_msg", None)
+    if _msg:
+        st.error(_msg)
 
     user_id = st.session_state.get("user_id")
     user = None
@@ -874,6 +1052,7 @@ def main():
     # ---- logged-in shell ----
     state = store.access_state(user)
     with st.sidebar:
+        logo_tap_button()
         st.markdown(f"### 👋 {user['name']}")
         st.write(f"📱 {user['mobile']}")
         if state["state"] == "trial":
@@ -896,9 +1075,6 @@ def main():
             key="menu_page",
         )
         st.divider()
-        if st.button("🛡️ অ্যাডমিন প্যানেল", use_container_width=True):
-            st.session_state["show_admin"] = True
-            st.rerun()
         if st.button("🚪 লগ আউট", use_container_width=True):
             st.session_state.pop("user_id", None)
             st.session_state.pop("menu_page", None)
