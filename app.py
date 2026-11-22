@@ -1,0 +1,702 @@
+# -*- coding: utf-8 -*-
+"""কিকি টক (Kiki Talk) — বাংলা TTS সাবস্ক্রিপশন অ্যাপ।
+
+দুটি ভয়েস (মডেল ১ আকিব / মডেল ২ কিকি বিগ রিরেকর্ড) এক লগইনে।
+সাইন আপ করলেই ১ ঘণ্টার ফ্রি ট্রায়াল, তারপর ম্যানুয়াল বিকাশ/নগদ
+পেমেন্টে মাসিক ৫০ টাকায় ৩০ দিন আনলিমিটেড। অ্যাডমিন প্যানেল অ্যাপের
+ভেতরেই — পেমেন্ট যাচাই করে এক ক্লিকে অ্যাকাউন্ট চালু করা যায়।
+
+ডেটা থাকে প্রাইভেট Hugging Face ডেটাসেটে (store.py দেখুন) — Streamlit
+Cloud রিস্টার্ট হলেও মুছে যায় না, কোনো সার্ভার লাগে না।
+"""
+
+import time
+from pathlib import Path
+
+import streamlit as st
+
+import script_check
+import store
+import subtitle_tools as tools
+import tts_engine
+
+# ---------------------------------------------------------------------------
+# পেমেন্টের নম্বর — মালিকের আসল নম্বর পেলেই এখানে বসাতে হবে।
+# TODO: replace with owner's real bKash/Nagad number
+# ---------------------------------------------------------------------------
+BKASH_NUMBER = "01XXXXXXXXX"  # TODO: replace with owner's real bKash number
+NAGAD_NUMBER = "01XXXXXXXXX"  # TODO: replace with owner's real Nagad number
+
+APP_DIR = Path(__file__).resolve().parent
+DEMO_AKIB = APP_DIR / "assets" / "demo_akib.wav"
+DEMO_KIKI = APP_DIR / "assets" / "demo_kiki.wav"
+
+SAMPLE_SCRIPT = (
+    "পররাষ্ট্র প্রতিমন্ত্রী শামা ওবায়েদ ইসলাম বলেছেন, নাগরিক হলেই পাসপোর্ট "
+    "পাওয়া যাবে, এমন কোনো নিশ্চয়তা নেই। "
+    "দণ্ডপ্রাপ্ত অপরাধী হলে সরকার পাসপোর্ট দিতে বাধ্য নয়। "
+    "তিনি জানান, দুই হাজার চব্বিশ সালের জুলাই-আগস্টের ঘটনায় মানবতাবিরোধী "
+    "অপরাধের দায়ে শেখ হাসিনা দোষী সাব্যস্ত হয়েছেন এবং তাকে মৃত্যুদণ্ড দেওয়া হয়েছে।"
+)
+
+AUDIO_EXTS = ["mp3", "wav", "m4a", "flac", "ogg", "aac"]
+
+_BN = str.maketrans("0123456789", "০১২৩৪৫৬৭৮৯")
+
+
+def bn(value) -> str:
+    """ASCII digits -> Bengali digits for display."""
+    return str(value).translate(_BN)
+
+
+def fmt_mins(seconds: int) -> str:
+    m, s = divmod(max(0, int(seconds)), 60)
+    if m >= 60:
+        h, m = divmod(m, 60)
+        return f"{bn(h)} ঘণ্টা {bn(m)} মিনিট"
+    if m > 0:
+        return f"{bn(m)} মিনিট {bn(s)} সেকেন্ড"
+    return f"{bn(s)} সেকেন্ড"
+
+
+# ---------------------------------------------------------------------------
+# Design: warm orange/cream palette, Hind Siliguri, gradient buttons,
+# cards, fade/slide-in animations. Mobile-first.
+# ---------------------------------------------------------------------------
+CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&display=swap');
+html, body, [class*="css"] { font-family: 'Hind Siliguri', sans-serif; }
+.stApp { background: linear-gradient(180deg, #fff8ef 0%, #fff3e0 55%, #ffeedd 100%); }
+
+/* --- gradient buttons (real designed buttons, not default grey) --- */
+.stButton > button, .stDownloadButton > button {
+    background: linear-gradient(135deg, #ff7a18 0%, #ff9a3d 60%, #ffb347 100%) !important;
+    color: #fff !important;
+    border: none !important;
+    border-radius: 999px !important;
+    padding: 0.65rem 1.4rem !important;
+    font-weight: 700 !important;
+    font-size: 1.02rem !important;
+    box-shadow: 0 6px 18px rgba(255, 122, 24, 0.35) !important;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease !important;
+}
+.stButton > button:hover, .stDownloadButton > button:hover {
+    transform: translateY(-2px) scale(1.02);
+    box-shadow: 0 10px 24px rgba(255, 122, 24, 0.45) !important;
+    filter: brightness(1.05);
+}
+.stButton > button:active, .stDownloadButton > button:active { transform: scale(0.97); }
+.stButton > button[kind="secondary"], .stDownloadButton > button[kind="secondary"] {
+    background: #fff !important; color: #e56b00 !important;
+    border: 2px solid #ffb347 !important;
+    box-shadow: 0 4px 12px rgba(255, 154, 61, 0.18) !important;
+}
+/* secondary (outline) buttons */
+div[data-testid="stButton"] > button[kind="secondary"] {
+    background: #ffffff !important; color: #e56b00 !important;
+    border: 2px solid #ffb347 !important;
+}
+
+/* --- cards --- */
+.kt-card {
+    background: #ffffff; border-radius: 18px; padding: 18px 20px;
+    box-shadow: 0 8px 24px rgba(120, 60, 0, 0.10);
+    border: 1px solid #ffe3c2; margin: 10px 0;
+    animation: ktFadeUp 0.5s ease both;
+}
+.kt-hero {
+    background: linear-gradient(135deg, #ff7a18, #ff9a3d 55%, #ffc46b);
+    color: #fff; border-radius: 22px; padding: 26px 22px; text-align: center;
+    box-shadow: 0 12px 30px rgba(255, 122, 24, 0.35); margin-bottom: 14px;
+    animation: ktFadeUp 0.5s ease both;
+}
+.kt-hero h1 { color: #fff !important; margin: 0 0 6px 0; font-size: 2.1rem; }
+.kt-hero p { color: #fff7ec !important; margin: 0; font-size: 1.05rem; }
+.kt-price { font-size: 2.4rem; font-weight: 700; color: #e56b00; line-height: 1.1; }
+.kt-price small { font-size: 1rem; color: #8a5a2b; font-weight: 500; }
+.kt-pill {
+    display: inline-block; background: #fff1de; color: #b25e00;
+    border-radius: 999px; padding: 4px 14px; font-weight: 600; font-size: 0.9rem;
+    border: 1px solid #ffd9a8;
+}
+.kt-demo { border: 1px solid #ffe3c2; border-radius: 16px; padding: 12px 14px; background: #fff; margin: 8px 0; animation: ktFadeUp 0.55s ease both; }
+@keyframes ktFadeUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes ktPop { 0% { transform: scale(0.96); } 60% { transform: scale(1.02); } 100% { transform: scale(1); } }
+.kt-pop { animation: ktPop 0.4s ease both; }
+
+/* inputs */
+.stTextInput input, .stTextArea textarea {
+    border-radius: 14px !important; border: 1.5px solid #ffd9a8 !important;
+    background: #fff !important;
+}
+.stTextInput input:focus, .stTextArea textarea:focus {
+    border-color: #ff7a18 !important; box-shadow: 0 0 0 3px rgba(255, 122, 24, 0.15) !important;
+}
+/* radio cards look */
+div[role="radiogroup"] label { font-weight: 600; }
+h1, h2, h3 { color: #7a3c00 !important; }
+hr { border-color: #ffe3c2; }
+</style>
+"""
+
+
+def show_demo_voices():
+    """Two tap-to-play demos, one per model (same samples as the plan)."""
+    st.markdown("### 🎧 ভয়েস শুনে দেখুন")
+    st.write("অ্যাকাউন্ট খোলার আগেই দুটি ভয়েসের নমুনা শুনতে পারেন — ট্যাপ করলেই বাজবে।")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown('<div class="kt-demo"><b>🎙️ মডেল ১ — আকিব</b></div>',
+                    unsafe_allow_html=True)
+        if DEMO_AKIB.exists():
+            st.audio(DEMO_AKIB.read_bytes(), format="audio/wav")
+        else:
+            st.info("ডেমো শীঘ্রই আসছে।")
+    with col2:
+        st.markdown('<div class="kt-demo"><b>🎙️ মডেল ২ — কিকি বিগ রিরেকর্ড</b></div>',
+                    unsafe_allow_html=True)
+        if DEMO_KIKI.exists():
+            st.audio(DEMO_KIKI.read_bytes(), format="audio/wav")
+        else:
+            st.info("ডেমো শীঘ্রই আসছে।")
+
+
+def pricing_card():
+    st.markdown(
+        '<div class="kt-card" style="text-align:center;">'
+        '<div class="kt-price">৳৫০ <small>/ মাস</small></div>'
+        '<p style="margin:6px 0 0 0;">দুটি ভয়েসই আনলিমিটেড • ৩০ দিন • সাবটাইটেলসহ (SRT / TXT / JSON)<br>'
+        'প্রথমে <b>১ ঘণ্টা ফ্রি ট্রায়াল</b> — আউটপুট শুনে তারপর পেমেন্ট।</p>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Auth pages
+# ---------------------------------------------------------------------------
+
+def page_auth():
+    st.markdown(
+        '<div class="kt-hero"><h1>🎙️ কিকি টক</h1>'
+        '<p>বাংলা ভয়েসে আপনার কনটেন্ট — দুটি ভালো ভয়েস, এক লগইনে।</p></div>',
+        unsafe_allow_html=True,
+    )
+    pricing_card()
+    show_demo_voices()
+
+    tab_login, tab_signup = st.tabs(["🔑 লগইন", "✍️ সাইন আপ (ফ্রি ট্রায়াল)"])
+    with tab_login:
+        mobile = st.text_input("মোবাইল নম্বর", placeholder="01XXXXXXXXX", key="login_mobile")
+        password = st.text_input("পাসওয়ার্ড", type="password", key="login_pw")
+        if st.button("🔓 লগইন করুন", type="primary", use_container_width=True):
+            try:
+                user = store.login(mobile, password)
+                st.session_state["user_id"] = user["id"]
+                st.session_state["menu_page"] = "🎙️ ভয়েস বানান"
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+        st.caption("পাসওয়ার্ড ভুলে গেলে মালিকের সাথে যোগাযোগ করুন — অ্যাডমিন আপনার পাসওয়ার্ড বদলে দিতে পারবেন।")
+    with tab_signup:
+        name = st.text_input("আপনার নাম", placeholder="যেমন: রহিম উদ্দিন", key="su_name")
+        mobile = st.text_input("মোবাইল নম্বর", placeholder="01XXXXXXXXX", key="su_mobile")
+        password = st.text_input("পাসওয়ার্ড (কমপক্ষে ৬ অক্ষর)", type="password", key="su_pw")
+        st.info("সাইন আপ করলেই **১ ঘণ্টার ফ্রি ট্রায়াল** চালু হবে — দুটি ভয়েসই ব্যবহার করে আউটপুটের মান দেখুন, তারপর পেমেন্টের সিদ্ধান্ত নিন।")
+        if st.button("🎉 অ্যাকাউন্ট খুলুন — ফ্রি ট্রায়াল শুরু", type="primary", use_container_width=True):
+            try:
+                user = store.signup(name, mobile, password)
+                st.session_state["user_id"] = user["id"]
+                st.session_state["menu_page"] = "🎙️ ভয়েস বানান"
+                st.success("অ্যাকাউন্ট খোলা হয়েছে! আপনার ১ ঘণ্টার ফ্রি ট্রায়াল চালু।")
+                time.sleep(1)
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+    st.divider()
+    if st.button("🛡️ অ্যাডমিন প্যানেল", use_container_width=False):
+        st.session_state["show_admin"] = True
+        st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Generation page (3 options, model switch, script check first)
+# ---------------------------------------------------------------------------
+
+def show_segments(segments):
+    for seg in segments:
+        st.write(f"**{tools.srt_time(seg['start'])} → {tools.srt_time(seg['end'])}**  {seg['text']}")
+
+
+def download_row(base: str, segments, duration: float, method: str, voice: str,
+                 wav_bytes: bytes | None = None):
+    srt_text = tools.to_srt(segments)
+    json_text = tools.to_json(f"{base}.wav", duration, segments, method, voice=voice)
+    cols = st.columns(4 if wav_bytes else 3)
+    with cols[0]:
+        st.download_button("⬇️ SRT ডাউনলোড", srt_text, file_name=f"{base}.srt",
+                           mime="text/plain", use_container_width=True)
+    with cols[1]:
+        st.download_button("⬇️ JSON ডাউনলোড", json_text, file_name=f"{base}.json",
+                           mime="application/json", use_container_width=True)
+    with cols[2]:
+        st.download_button("⬇️ শুধু লেখা (.txt)", " ".join(s["text"] for s in segments),
+                           file_name=f"{base}.txt", mime="text/plain",
+                           use_container_width=True)
+    if wav_bytes:
+        with cols[3]:
+            st.download_button("⬇️ অডিও (.wav)", wav_bytes, file_name=f"{base}.wav",
+                               mime="audio/wav", use_container_width=True)
+
+
+def page_generate(user: dict):
+    state = store.access_state(user)
+    # ---- status card ----
+    if state["state"] == "trial":
+        st.markdown(
+            f'<div class="kt-card">⏳ <b>ফ্রি ট্রায়াল চলছে</b> — আর '
+            f'<b>{fmt_mins(state["trial_left_s"])}</b> বাকি। '
+            f'ট্রায়াল শেষ হলে পেমেন্ট করে ৩০ দিনের প্যাকেজ নিন।</div>',
+            unsafe_allow_html=True,
+        )
+    elif state["state"] == "active":
+        left = state["sub_left_days"]
+        left_txt = f"{bn(left)} দিন" if left > 0 else f"{bn(state['sub_left_hours'])} ঘণ্টা"
+        st.markdown(
+            f'<div class="kt-card">✅ <b>প্যাকেজ চালু আছে</b> — আর '
+            f'<b>{left_txt}</b> বাকি। মেয়াদ শেষের আগে রিনিউ করতে পারবেন।</div>',
+            unsafe_allow_html=True,
+        )
+    remaining = store.daily_remaining(user)
+    st.caption(f"আজকের ফেয়ার-ইউজ সীমা: আর {bn(f'{remaining:,}')} অক্ষর বাকি।")
+
+    st.subheader("🎙️ ভয়েস বানান")
+    model_key = st.radio(
+        "ভয়েস বেছে নিন",
+        options=["akib", "kiki"],
+        format_func=lambda k: tts_engine.MODELS[k]["label"],
+        horizontal=True,
+    )
+    voice_name = tts_engine.MODELS[model_key]["voice_name"]
+
+    option = st.radio(
+        "কীভাবে বানাবেন?",
+        ["শুধু অডিও", "অডিও + সাবটাইটেল (SRT)", "অডিও + স্ক্রিপ্ট → সাবটাইটেল"],
+        index=1,
+    )
+
+    # ---- option 3: audio + script -> subtitle ----
+    if option.startswith("অডিও + স্ক্রিপ্ট"):
+        uploaded = st.file_uploader("আগে বানানো অডিও ফাইল দিন", type=AUDIO_EXTS)
+        text = st.text_area("স্ক্রিপ্ট (অডিওতে যা বলা হয়েছে, হুবহু তাই লিখুন)",
+                            height=150, key="script_b",
+                            help="দাঁড়ি (।) দিয়ে প্রতিটা বাক্য শেষ করুন।")
+        if uploaded is not None:
+            st.audio(uploaded)
+        if st.button("📝 সাবটাইটেল বানাও", type="primary", use_container_width=True):
+            if uploaded is None:
+                st.warning("আগে অডিও ফাইল দিন।")
+            elif not (text or "").strip():
+                st.warning("আগে স্ক্রিপ্ট লিখুন।")
+            else:
+                checked = script_check.check_script(text)
+                for f in checked["fixes"]:
+                    st.info(f"✔️ {f}")
+                for w in checked["warnings"]:
+                    st.warning(f"⚠️ {w}")
+                try:
+                    with st.spinner("অডিও পড়া হচ্ছে…"):
+                        ext = uploaded.name.rsplit(".", 1)[-1].lower()
+                        audio, rate = tools.decode_audio(uploaded.getbuffer().tobytes(), ext)
+                    sentences = tools.split_sentences(checked["fixed"])
+                    segments, exact, note = tools.align_audio_script(audio, rate, sentences)
+                    duration = len(audio) / rate
+                    if exact:
+                        st.success(f"শেষ! {bn(len(segments))}টি বাক্য • মোট সময় "
+                                   f"{tools.format_duration(duration)} • {note}")
+                    else:
+                        st.warning(note)
+                    st.subheader("সাবটাইটেল")
+                    show_segments(segments)
+                    base = uploaded.name.rsplit(".", 1)[0]
+                    download_row(base, segments, duration, "audio+script", voice_name)
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"বানানো যায়নি: {exc}")
+        return
+
+    # ---- options 1 & 2: script -> audio (+ subtitle) ----
+    if st.button("📰 নমুনা স্ক্রিপ্ট", use_container_width=False):
+        st.session_state["script_main"] = SAMPLE_SCRIPT
+    text = st.text_area("স্ক্রিপ্ট (বাংলায়, দাঁড়ি দিয়ে বাক্য শেষ করুন)",
+                        value=st.session_state.get("script_main", SAMPLE_SCRIPT),
+                        height=160, key="script_main")
+    speed = st.selectbox("গতি", options=[0.75, 1.0, 1.25, 1.5], index=1,
+                         format_func=lambda v: f"{v}x")
+
+    col_check, col_gen = st.columns(2)
+    with col_check:
+        check_clicked = st.button("🔍 স্ক্রিপ্ট যাচাই করুন", use_container_width=True)
+    with col_gen:
+        gen_clicked = st.button("🎙️ ভয়েস বানাও", type="primary", use_container_width=True)
+
+    if check_clicked:
+        checked = script_check.check_script(text)
+        st.session_state["checked_script"] = checked["fixed"]
+        if checked["fixes"]:
+            for f in checked["fixes"]:
+                st.success(f"✔️ {f}")
+        else:
+            st.success("✔️ স্ক্রিপ্ট ঠিক আছে — কোনো বদল লাগেনি।")
+        for w in checked["warnings"]:
+            st.warning(f"⚠️ {w}")
+        with st.expander("📝 যাচাই করা স্ক্রিপ্ট দেখুন"):
+            st.write(checked["fixed"])
+
+    if gen_clicked:
+        raw = (text or "").strip()
+        if not raw:
+            st.warning("আগে স্ক্রিপ্ট লিখুন।")
+            return
+        checked = script_check.check_script(raw)
+        st.session_state["checked_script"] = checked["fixed"]
+        for f in checked["fixes"]:
+            st.info(f"✔️ {f}")
+        for w in checked["warnings"]:
+            st.warning(f"⚠️ {w}")
+        fixed = checked["fixed"]
+        try:
+            remaining_now = store.check_and_charge_chars(user["id"], len(fixed))
+        except Exception as exc:
+            st.error(str(exc))
+            return
+        try:
+            with st.spinner("মডেল লোড হচ্ছে / অডিও বানানো হচ্ছে… (প্রথমবার মডেল নামতে একটু সময় লাগবে)"):
+                t0 = time.time()
+                tts_engine.ensure_model(model_key)
+                if option.startswith("শুধু অডিও"):
+                    samples, info = tts_engine.synthesize(fixed, model_key, speed=speed)
+                    segments = None
+                else:
+                    samples, segments, info = tools.synthesize_aligned(fixed, model_key, speed=speed)
+                total = time.time() - t0
+            wav = tts_engine.samples_to_wav_bytes(samples)
+            st.audio(wav, format="audio/wav", sample_rate=tts_engine.SAMPLE_RATE)
+            st.success(f"শেষ! মোট সময় {tools.format_duration(info['duration_s'])} • "
+                       f"বানাতে লেগেছে {total:.0f} সেকেন্ড • "
+                       f"আজ আর {bn(f'{remaining_now:,}')} অক্ষর বাকি")
+            if segments is not None:
+                st.subheader("সাবটাইটেল")
+                show_segments(segments)
+                download_row("kiki_talk_audio", segments, info["duration_s"],
+                             "script-to-audio", voice_name, wav_bytes=wav)
+            else:
+                st.download_button("⬇️ অডিও ডাউনলোড (.wav)", wav,
+                                   file_name="kiki_talk_audio.wav",
+                                   mime="audio/wav", use_container_width=True)
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"বানানো যায়নি: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Payment / renew page
+# ---------------------------------------------------------------------------
+
+def page_payment(user: dict):
+    state = store.access_state(user)
+    st.subheader("💳 পেমেন্ট — মাসিক প্যাকেজ")
+    pricing_card()
+    if state["state"] == "active":
+        st.success(f"আপনার প্যাকেজ চালু আছে — আর {bn(state['sub_left_days'])} দিন বাকি। "
+                   "মেয়াদ শেষের আগেই রিনিউ করতে পারেন।")
+    elif state["state"] == "trial":
+        st.info(f"আপনার ফ্রি ট্রায়াল চলছে — আর {fmt_mins(state['trial_left_s'])} বাকি। "
+                "ট্রায়াল শেষ হলে এখান থেকে পেমেন্ট করে প্যাকেজ নিন।")
+
+    st.markdown("### 📱 যেভাবে টাকা পাঠাবেন")
+    st.write("১. নিচের নম্বরটি কপি করে বিকাশ বা নগদ অ্যাপে **Send Money** করুন।")
+    st.write("২. টাকা পাঠিয়ে এখানে ফিরে **ট্রানজাকশন আইডি** অথবা **স্ক্রিনশট** জমা দিন।")
+    st.write("৩. মালিক টাকা মিলিয়ে যাচাই করে আপনার অ্যাকাউন্ট **৩০ দিনের জন্য** চালু করে দেবেন।")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**বিকাশ (Send Money)**")
+        st.code(BKASH_NUMBER)
+    with col2:
+        st.markdown("**নগদ (Send Money)**")
+        st.code(NAGAD_NUMBER)
+
+    st.markdown("### 🧾 পেমেন্ট জমা দিন")
+    txn_id = st.text_input("ট্রানজাকশন আইডি", placeholder="যেমন: 9HX7K2PQR1", key="pay_txn")
+    amount = st.number_input("অ্যামাউন্ট (টাকা)", min_value=1, value=store.PRICE_TAKA, step=1)
+    shot = st.file_uploader("পেমেন্টের স্ক্রিনশট (যদি থাকে)", type=["png", "jpg", "jpeg"])
+    if st.button("📤 পেমেন্ট জমা দিন", type="primary", use_container_width=True):
+        try:
+            shot_bytes = shot.getbuffer().tobytes() if shot is not None else None
+            ext = "png"
+            if shot is not None:
+                ext = shot.name.rsplit(".", 1)[-1].lower()
+                if ext not in ("png", "jpg", "jpeg"):
+                    ext = "png"
+            pay = store.submit_payment(user, txn_id, int(amount), shot_bytes, ext)
+            st.success("পেমেন্ট জমা হয়েছে! মালিক যাচাই করে অ্যাকাউন্ট চালু করে দেবেন। "
+                       "লগইন করলেই মেয়াদ দেখতে পাবেন।")
+            st.info(f"আপনার জমা নম্বর: {pay['id']}")
+        except Exception as exc:
+            st.error(str(exc))
+
+    st.markdown("### 📋 আমার পেমেন্টগুলো")
+    mine = store.list_user_payments(user["id"])
+    if not mine:
+        st.write("এখনো কোনো পেমেন্ট জমা দেননি।")
+    for p in mine:
+        status_bn = {"pending": "⏳ যাচাই চলছে", "approved": "✅ চালু হয়েছে",
+                     "rejected": "❌ বাতিল হয়েছে"}.get(p["status"], p["status"])
+        st.write(f"**{p['submitted_at'][:16]}** • {bn(p['amount'])} টাকা • "
+                 f"Txn: {p['txn_id'] or '—'} • {status_bn}")
+
+
+# ---------------------------------------------------------------------------
+# Rules page
+# ---------------------------------------------------------------------------
+
+def page_rules():
+    st.subheader("📏 স্ক্রিপ্ট লেখার নিয়ম")
+    st.write("মডেল কথা পড়ে ঠিক যেভাবে লেখা থাকে। নিয়ম মানলেই ভয়েস পরিষ্কার থাকবে — "
+             "আর অ্যাপ নিজেই জেনারেটের আগে স্ক্রিপ্ট যাচাই করে ঠিক করে দেয়।")
+    for title, rule in script_check.RULES_TABLE:
+        st.markdown(f"**{title}** — {rule}")
+    st.markdown("### 🤖 তৈরি প্রম্পট — স্ক্রিপ্ট আগে সাজিয়ে নিন")
+    st.write("যেকোনো স্ক্রিপ্ট প্রথমে এই প্রম্পটের সঙ্গে ChatGPT বা Gemini-তে দিন, "
+             "সাজানো লেখাটি ফিরে এলে সেটি কপি করে অ্যাপে বসান।")
+    st.code(script_check.READY_PROMPT, language=None)
+
+
+# ---------------------------------------------------------------------------
+# Change password page
+# ---------------------------------------------------------------------------
+
+def page_change_password(user: dict):
+    st.subheader("🔐 পাসওয়ার্ড বদলান")
+    old = st.text_input("পুরনো পাসওয়ার্ড", type="password", key="cp_old")
+    new = st.text_input("নতুন পাসওয়ার্ড (কমপক্ষে ৬ অক্ষর)", type="password", key="cp_new")
+    new2 = st.text_input("নতুন পাসওয়ার্ড আবার", type="password", key="cp_new2")
+    if st.button("💾 পাসওয়ার্ড বদলান", type="primary", use_container_width=True):
+        if new != new2:
+            st.error("নতুন পাসওয়ার্ড দুবার এক হয়নি।")
+        else:
+            try:
+                store.change_password(user["id"], old, new)
+                st.success("পাসওয়ার্ড বদলে গেছে।")
+            except Exception as exc:
+                st.error(str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Admin panel (inside the app; password set on first visit, never hard-coded)
+# ---------------------------------------------------------------------------
+
+def page_admin():
+    st.markdown(
+        '<div class="kt-hero"><h1>🛡️ অ্যাডমিন প্যানেল</h1>'
+        '<p>শুধু মালিকের জন্য — পেমেন্ট যাচাই ও অ্যাকাউন্ট নিয়ন্ত্রণ।</p></div>',
+        unsafe_allow_html=True,
+    )
+    if st.button("← অ্যাপে ফিরে যান"):
+        st.session_state["show_admin"] = False
+        st.rerun()
+
+    if not store.admin_is_set_up():
+        st.warning("অ্যাডমিন পাসওয়ার্ড এখনো সেট করা হয়নি। প্রথমবার এখানেই সেট করুন — "
+                   "এই পাসওয়ার্ডটি মনে রাখবেন, চ্যাটে বা কোথাও লিখবেন না।")
+        pw1 = st.text_input("অ্যাডমিন পাসওয়ার্ড সেট করুন (কমপক্ষে ৮ অক্ষর)",
+                            type="password", key="adm_set1")
+        pw2 = st.text_input("আবার লিখুন", type="password", key="adm_set2")
+        if st.button("🔒 পাসওয়ার্ড সেট করুন", type="primary", use_container_width=True):
+            if pw1 != pw2:
+                st.error("দুবার এক হয়নি।")
+            else:
+                try:
+                    store.admin_set_password(pw1)
+                    st.session_state["admin_ok"] = True
+                    st.success("অ্যাডমিন পাসওয়ার্ড সেট হয়েছে।")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+        return
+
+    if not st.session_state.get("admin_ok"):
+        pw = st.text_input("অ্যাডমিন পাসওয়ার্ড", type="password", key="adm_login")
+        if st.button("🔓 ঢুকুন", type="primary", use_container_width=True):
+            if store.admin_check_password(pw):
+                st.session_state["admin_ok"] = True
+                st.rerun()
+            else:
+                st.error("পাসওয়ার্ড ভুল হয়েছে।")
+        return
+
+    # ---- logged in as admin ----
+    users = store.list_users()
+    pending = store.list_payments(status="pending")
+    n_trial = sum(1 for u in users if store.access_state(u)["state"] == "trial")
+    n_active = sum(1 for u in users if store.access_state(u)["state"] == "active")
+    n_expired = sum(1 for u in users if store.access_state(u)["state"] == "expired")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("মোট ইউজার", bn(len(users)))
+    c2.metric("ট্রায়ালে", bn(n_trial))
+    c3.metric("পেইড চালু", bn(n_active))
+    c4.metric("মেয়াদ শেষ", bn(n_expired))
+
+    st.markdown("### 🧾 পেমেন্ট সাবমিশন (যাচাই বাকি)")
+    if not pending:
+        st.write("যাচাই করার মতো কোনো পেমেন্ট নেই।")
+    for p in pending:
+        with st.container():
+            st.markdown(
+                f'<div class="kt-card"><b>{p["name"]}</b> ({p["mobile"]})<br>'
+                f'ট্রানজাকশন আইডি: <b>{p["txn_id"] or "—"}</b> • '
+                f'অ্যামাউন্ট: <b>{bn(p["amount"])} টাকা</b><br>'
+                f'জমা: {p["submitted_at"]}</div>',
+                unsafe_allow_html=True,
+            )
+            if p.get("screenshot_path"):
+                try:
+                    img = store.download_screenshot(p["screenshot_path"])
+                    st.image(img, caption="পেমেন্টের স্ক্রিনশট", use_container_width=True)
+                except Exception as exc:
+                    st.warning(f"স্ক্রিনশট খোলা যায়নি: {exc}")
+            b1, b2 = st.columns(2)
+            with b1:
+                if st.button("✅ অ্যাপ্রুভ — ৩০ দিন চালু করুন",
+                             key=f"ap_{p['id']}", type="primary", use_container_width=True):
+                    try:
+                        store.decide_payment(p["id"], approve=True)
+                        st.success(f"{p['name']}-এর অ্যাকাউন্ট ৩০ দিনের জন্য চালু হয়েছে।")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(str(exc))
+            with b2:
+                if st.button("❌ রিজেক্ট", key=f"rj_{p['id']}", use_container_width=True):
+                    try:
+                        store.decide_payment(p["id"], approve=False)
+                        st.warning("পেমেন্টটি বাতিল করা হয়েছে।")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(str(exc))
+
+    st.markdown("### 👥 ব্যবহারকারী ও মেয়াদ")
+    for u in users:
+        stt = store.access_state(u)
+        state_bn = {"trial": f"⏳ ট্রায়াল — আর {fmt_mins(stt['trial_left_s'])}",
+                    "active": f"✅ চালু — আর {bn(stt['sub_left_days'])} দিন",
+                    "expired": "⌛ মেয়াদ শেষ",
+                    "blocked": "🚫 বন্ধ আছে"}.get(stt["state"], stt["state"])
+        with st.expander(f"{u['name']} • {u['mobile']} • {state_bn}"):
+            st.write(f"সাইন আপ: {u.get('created_at', '')[:16]}")
+            st.write(f"ট্রায়াল শেষ: {u.get('trial_ends_at', '')[:16]}")
+            st.write(f"মেয়াদ শেষ: {(u.get('expires_at') or '—')[:16]}")
+            used_chars = bn(f"{int(u.get('daily_chars_used', 0)):,}")
+            st.write(f"আজকের ব্যবহার: {used_chars} অক্ষর")
+            new_pw = st.text_input("নতুন পাসওয়ার্ড দিন (ভুলে গেলে)", type="password",
+                                   key=f"rpw_{u['id']}")
+            cb1, cb2 = st.columns(2)
+            with cb1:
+                if st.button("🔑 পাসওয়ার্ড বদলে দিন", key=f"rpw_btn_{u['id']}",
+                             use_container_width=True):
+                    try:
+                        store.admin_set_user_password(u["id"], new_pw)
+                        st.success(f"পাসওয়ার্ড বদলে গেছে — ইউজারকে জানিয়ে দিন: {new_pw}")
+                    except Exception as exc:
+                        st.error(str(exc))
+            with cb2:
+                label = "🚫 অ্যাকাউন্ট বন্ধ করুন" if u.get("active", True) else "✅ অ্যাকাউন্ট চালু করুন"
+                if st.button(label, key=f"blk_{u['id']}", use_container_width=True):
+                    store.set_user_active(u["id"], not u.get("active", True))
+                    st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    st.set_page_config(page_title="কিকি টক — বাংলা ভয়েস", page_icon="🎙️",
+                       layout="centered")
+    st.markdown(CSS, unsafe_allow_html=True)
+
+    # Admin page: ?admin=1 or sidebar button
+    try:
+        if st.query_params.get("admin") == "1":
+            st.session_state["show_admin"] = True
+    except Exception:
+        pass
+    if st.session_state.get("show_admin"):
+        page_admin()
+        return
+
+    user_id = st.session_state.get("user_id")
+    user = None
+    if user_id:
+        try:
+            user = store.get_user_by_id(user_id)
+        except Exception as exc:
+            st.error(f"ডেটা খোলা যায়নি: {exc}")
+            st.stop()
+        if user is None:
+            st.session_state.pop("user_id", None)
+
+    if user is None:
+        page_auth()
+        return
+
+    # ---- logged-in shell ----
+    state = store.access_state(user)
+    with st.sidebar:
+        st.markdown(f"### 👋 {user['name']}")
+        st.write(f"📱 {user['mobile']}")
+        if state["state"] == "trial":
+            st.markdown(f'<span class="kt-pill">⏳ ট্রায়াল — আর {fmt_mins(state["trial_left_s"])}</span>',
+                        unsafe_allow_html=True)
+        elif state["state"] == "active":
+            st.markdown(f'<span class="kt-pill">✅ চালু — আর {bn(state["sub_left_days"])} দিন</span>',
+                        unsafe_allow_html=True)
+        elif state["state"] == "blocked":
+            st.markdown('<span class="kt-pill">🚫 অ্যাকাউন্ট বন্ধ আছে</span>',
+                        unsafe_allow_html=True)
+        else:
+            st.markdown('<span class="kt-pill">⌛ মেয়াদ শেষ — রিনিউ করুন</span>',
+                        unsafe_allow_html=True)
+        st.divider()
+        page = st.radio(
+            "মেনু",
+            ["🎙️ ভয়েস বানান", "💳 পেমেন্ট / রিনিউ", "📏 স্ক্রিপ্টের নিয়ম",
+             "🔐 পাসওয়ার্ড বদলান"],
+            key="menu_page",
+        )
+        st.divider()
+        if st.button("🛡️ অ্যাডমিন প্যানেল", use_container_width=True):
+            st.session_state["show_admin"] = True
+            st.rerun()
+        if st.button("🚪 লগ আউট", use_container_width=True):
+            st.session_state.pop("user_id", None)
+            st.session_state.pop("menu_page", None)
+            st.rerun()
+
+    if not state["has_access"]:
+        st.warning("আপনার ট্রায়াল / প্যাকেজের মেয়াদ শেষ হয়েছে — ভয়েস বানাতে "
+                   "হলে পেমেন্ট করে প্যাকেজ নিন।")
+        page_payment(user)
+        return
+
+    if page == "🎙️ ভয়েস বানান":
+        page_generate(user)
+    elif page == "💳 পেমেন্ট / রিনিউ":
+        page_payment(user)
+    elif page == "📏 স্ক্রিপ্টের নিয়ম":
+        page_rules()
+    elif page == "🔐 পাসওয়ার্ড বদলান":
+        page_change_password(user)
+
+
+if __name__ == "__main__":
+    main()

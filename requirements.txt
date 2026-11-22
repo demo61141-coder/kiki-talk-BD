@@ -1,0 +1,4 @@
+sherpa-onnx==2.0.1
+streamlit>=1.39,<2
+numpy>=1.26
+huggingface_hub>=0.25
